@@ -45,6 +45,20 @@ export const Checkbox: React.FC<React.InputHTMLAttributes<HTMLInputElement>> = (
   <input type="checkbox" className={cn("h-4 w-4 rounded border-zinc-700 bg-zinc-800 text-indigo-500 focus:ring-indigo-500/20", className)} {...props} />
 );
 
+export const Label: React.FC<React.LabelHTMLAttributes<HTMLLabelElement>> = ({ className, ...props }) => (
+  <label className={cn("text-xs font-medium text-zinc-400 mb-1.5 block", className)} {...props} />
+);
+
+export const Select: React.FC<React.SelectHTMLAttributes<HTMLSelectElement>> = ({ className, ...props }) => (
+  <div className="relative">
+    <select className={cn("flex h-9 w-full rounded-md border border-zinc-800 bg-zinc-900 px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 text-zinc-100 appearance-none", className)} {...props} />
+    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-zinc-500">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+    </div>
+  </div>
+);
+
+
 // --- New Components ---
 
 // Dialog / Modal
