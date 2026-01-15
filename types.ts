@@ -60,7 +60,7 @@ export interface AdRow {
 export interface MetaConfig {
   accountId: string;
   accountName: string;
-  currency: string; // Added Currency
+  currency: string; // Added Currency Field
   token: string;
 }
 

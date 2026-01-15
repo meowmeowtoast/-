@@ -163,17 +163,17 @@ const mapStatus = (effectiveStatus: string, stopTime?: string): string => {
 };
 
 // Helper: Get Budget Divider based on Currency
-// Some currencies in Meta API are 0-decimal (like JPY) where 1 unit = 1 API unit.
-// TWD is technically 2-decimal in Meta specs (cents), BUT for this specific user case,
-// the API is returning Units (150 for 150 TWD), so we treat TWD as 0-decimal divider.
+// Logic: If currency is TWD, JPY, etc., API usually returns units (150 = 150), so divider is 1.
+// For USD, EUR, API returns cents (150 = 1.50), so divider is 100.
+// Note: This logic is tuned based on user feedback that TWD is appearing divided by 100 incorrectly.
 const getBudgetDivider = (currency: string): number => {
     const zeroDecimalCurrencies = [
         'BIF', 'CLP', 'DJF', 'GNF', 'ISK', 'JPY', 'KMF', 'KRW', 'MGA', 
         'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF',
-        'TWD', // Added TWD here based on user observation (150 API = 150 Budget)
+        'TWD', // Added TWD to treat as unit-based for this API version/account
         'HUF'
     ];
-    if (zeroDecimalCurrencies.includes(currency.toUpperCase())) {
+    if (currency && zeroDecimalCurrencies.includes(currency.toUpperCase())) {
         return 1;
     }
     return 100;
@@ -183,9 +183,9 @@ const getBudgetDivider = (currency: string): number => {
 const calculateMetrics = (
     item: any, 
     level: AdRow['level'], 
-    effectiveStatus: string, // Raw effective_status from API
+    effectiveStatus: string, 
     structInfo: any, // Contains budget, endTime, etc.
-    currency: string,
+    currency: string, // PASSED CURRENCY
     adImageMap?: Map<string, string>, 
     extraProps: Partial<AdRow> = {},
     objective?: string
@@ -223,10 +223,10 @@ const calculateMetrics = (
 
     const imageUrl = adImageMap && item.ad_id ? adImageMap.get(item.ad_id) : undefined;
 
-    // --- Status Logic Fix ---
+    // --- Status ---
     const finalStatus = mapStatus(effectiveStatus, structInfo?.stopTime || structInfo?.endTime);
 
-    // --- Budget Logic ---
+    // --- Budget Logic Fix ---
     let budget = 0;
     let budgetType = '';
     const divider = getBudgetDivider(currency);
@@ -238,9 +238,8 @@ const calculateMetrics = (
         budget = parseInt(structInfo.lifetime_budget, 10) / divider;
         budgetType = 'Lifetime';
     } else if (level === 'campaign') {
-        // ABO Detection: If Campaign Level, active, but no budget -> likely ABO
-        // We set budget to 0, but label it.
-        budgetType = 'ABO'; // Internal flag for "使用廣告組合預算"
+        // ABO Detection
+        budgetType = 'ABO'; 
     }
 
     // 2. Messaging
@@ -285,7 +284,7 @@ export const fetchMetaAdsData = async (
   accountId: string, 
   startDate: string, 
   endDate: string,
-  currency: string // Pass currency to logic
+  currency: string // ADDED CURRENCY ARGUMENT
 ): Promise<AdRow[]> => {
   const timeRange = JSON.stringify({ since: startDate, until: endDate });
   
@@ -317,20 +316,17 @@ export const fetchMetaAdsData = async (
     access_token: token
   });
 
-  // Structure Status Calls - FETCH BUDGET
-  // Campaign: stop_time, daily_budget, lifetime_budget
+  // Structure Status Calls
   const campaignsUrl = `${BASE_URL}/act_${accountId}/campaigns?` + new URLSearchParams({
       fields: 'name,effective_status,objective,stop_time,daily_budget,lifetime_budget',
       limit: '500',
       access_token: token
   });
-  // AdSet: end_time, daily_budget, lifetime_budget
   const adsetsUrl = `${BASE_URL}/act_${accountId}/adsets?` + new URLSearchParams({
       fields: 'name,effective_status,end_time,campaign_id,daily_budget,lifetime_budget',
       limit: '500',
       access_token: token
   });
-  // Ads - ADDED object_story_spec for better image extraction
   const adsUrl = `${BASE_URL}/act_${accountId}/ads?` + new URLSearchParams({
     fields: 'name,effective_status,creative{thumbnail_url,image_url,title,body,object_story_spec},adset_id',
     limit: '500',
@@ -407,7 +403,7 @@ export const fetchMetaAdsData = async (
       }
   });
 
-  // --- Process Rows ---
+  // --- Process Rows with Currency Passed ---
   
   // 1. Campaign Rows
   const campaignRows = (campData.data || []).map((item: any) => {

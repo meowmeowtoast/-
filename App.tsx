@@ -743,8 +743,9 @@ const App: React.FC = () => {
     addToast(`檢視模式「${name}」已儲存`, 'success');
   };
 
+  // Helper: Use Project Currency if available, default to USD
   const formatVal = (val: any, type: ColumnDef['type'], currencyCode: string = 'USD') => {
-    if (type === 'currency') return new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(val);
+    if (type === 'currency') return new Intl.NumberFormat('zh-TW', { style: 'currency', currency: currencyCode }).format(val);
     if (type === 'percent') return `${val.toFixed(2)}%`;
     if (type === 'number') return val.toLocaleString();
     return val;
