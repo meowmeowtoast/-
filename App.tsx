@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Upload, Download, Settings, RefreshCw, Layers, Plus, Trash2, Sparkles, 
@@ -23,11 +24,12 @@ const AVAILABLE_COLUMNS: ColumnDef[] = [
   { id: 'imageUrl', label: '素材預覽', type: 'image', width: 80 },
   { id: 'name', label: '名稱', type: 'text', width: 250 }, 
   { id: 'status', label: '投遞狀態', type: 'text' },
+  { id: 'budget', label: '預算', type: 'currency' }, // New
   
   // Engagement
   { id: 'impressions', label: '曝光次數', type: 'number' },
   { id: 'reach', label: '觸及人數', type: 'number' },
-  { id: 'clicks', label: '點擊次數 (全部)', type: 'number' }, // Updated Label
+  { id: 'clicks', label: '點擊次數 (全部)', type: 'number' }, 
   { id: 'ctr', label: 'CTR (全部)', type: 'percent' },
   { id: 'cpc', label: 'CPC (全部)', type: 'currency' },
   
@@ -40,9 +42,15 @@ const AVAILABLE_COLUMNS: ColumnDef[] = [
   { id: 'spend', label: '花費金額', type: 'currency' },
   { id: 'conversions', label: '成果', type: 'number' },
   { id: 'costPerResult', label: '每次成果成本', type: 'currency' },
-  { id: 'cpm', label: 'CPM (每千次曝光成本)', type: 'currency' },
+  { id: 'cpm', label: 'CPM', type: 'currency' },
   { id: 'frequency', label: '頻率', type: 'number' },
   
+  // Advanced Messaging & Engagement
+  { id: 'costPerPageEngagement', label: '每次粉絲專頁互動成本', type: 'currency' },
+  { id: 'newMessagingConnections', label: '新的訊息聯繫對象', type: 'number' },
+  { id: 'costPerNewMessagingConnection', label: '每位新訊息聯繫對象成本', type: 'currency' },
+  { id: 'messagingConversationsStarted', label: '訊息對話開始次數', type: 'number' },
+
   { id: 'websitePurchases', label: '網站購買', type: 'number' },
   { id: 'cpa', label: 'CPA', type: 'currency' },
   { id: 'conversionRate', label: '轉換率', type: 'percent' },
@@ -102,26 +110,32 @@ const DEFAULT_PRESETS: Preset[] = [
       name: '性別分佈報表',
       columns: DEMO_COLUMNS
   },
-  // 6. Yangyu Default (Matching provided CSV)
+  // 6. Yangyu Default (Updated)
   {
       id: 'yangyu_default',
       name: '秧語預設',
       columns: [
-          'name', // Campaign Name
-          'status',
-          'impressions',
-          'reach',
-          'clicks', // All clicks
-          'ctr', // All CTR
-          'cpc', // All CPC
-          'linkClicks',
-          'linkCtr',
-          'linkCpc',
-          'spend',
-          'conversions',
-          'costPerResult',
-          'cpm',
-          'frequency'
+          'name', // 行銷活動 (Mapped to name for Campaign level)
+          'status', // 投遞狀態
+          // Action (操作) is skipped as it's UI
+          'budget', // 預算
+          'impressions', // 曝光次數
+          'reach', // 觸及人數
+          'clicks', // 點擊次數（全部）
+          'ctr', // CTR（全部）
+          'cpc', // CPC（全部）
+          'linkClicks', // 連結點擊次數
+          'linkCtr', // CTR（連結點閱率）
+          'linkCpc', // CPC（單次連結點擊成本）
+          'spend', // 花費金額
+          'conversions', // 成果
+          'costPerResult', // 每次成果成本
+          'costPerPageEngagement', // 每次粉絲專頁互動成本
+          'cpm', // CPM
+          'frequency', // 頻率
+          'newMessagingConnections', // 新的訊息聯繫對象
+          'costPerNewMessagingConnection', // 每位新訊息聯繫對象成本
+          'messagingConversationsStarted' // 訊息對話開始次數
       ]
   }
 ];
@@ -1122,8 +1136,9 @@ const App: React.FC = () => {
                             <tbody className="divide-y divide-zinc-800/50">
                             {filteredData.slice(0, 200).map((row, index) => {
                                 // --- MERGE LOGIC ---
-                                const isDefaultSort = !sortConfig;
-                                const isSameCampaign = isDefaultSort && index > 0 && row.campaignName === filteredData[index - 1].campaignName;
+                                // Allow grouping if NO sort is active OR if sorting by Campaign Name (ASC or DESC)
+                                const isGroupedSort = !sortConfig || sortConfig.key === 'campaignName';
+                                const isSameCampaign = isGroupedSort && index > 0 && row.campaignName === filteredData[index - 1].campaignName;
                                 
                                 return (
                                     <tr key={row.id} className="hover:bg-zinc-800/30 transition-colors group">
@@ -1161,6 +1176,12 @@ const App: React.FC = () => {
                                         }
                                         if (colId === 'name') {
                                             return <td key={colId} className="px-4 py-2.5 max-w-[300px] truncate text-zinc-300 group-hover:text-zinc-100 font-medium" title={val}>{val}</td>;
+                                        }
+                                        
+                                        if (colId === 'budget') {
+                                             return <td key={colId} className="px-4 py-2.5 text-zinc-400 tabular-nums">
+                                                 {val ? `${formatVal(val, 'currency')}${row.budgetType === 'Daily' ? '/日' : '/總'}` : '-'}
+                                             </td>
                                         }
 
                                         return (

@@ -1,3 +1,4 @@
+
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import { AdRow, Platform, Level } from '../types';
@@ -84,6 +85,13 @@ export const parseCSV = (file: File): Promise<AdRow[]> => {
           let frequency = 0;
           let costPerResult = 0;
 
+          // New fields
+          let budget = 0;
+          let costPerPageEngagement = 0;
+          let newMessagingConnections = 0;
+          let costPerNewMessagingConnection = 0;
+          let messagingConversationsStarted = 0;
+
           let campaignName = '';
           let adGroupName = '';
           let imageUrl = undefined;
@@ -130,6 +138,15 @@ export const parseCSV = (file: File): Promise<AdRow[]> => {
             cpm = parseCurrency(row['CPM (Cost per 1,000 Impressions) (TWD)'] || row['CPM（每千次廣告曝光成本） (TWD)'] || row['CPM'] || row['CPM (Cost per 1,000 Impressions)']);
             frequency = parseCurrency(row['Frequency'] || row['頻率']);
             costPerResult = parseCurrency(row['Cost per Result'] || row['每次成果成本'] || row['CPR']);
+            
+            // New CSV Mappings for Yangyu
+            budget = parseCurrency(row['廣告組合預算'] || row['Budget'] || 0);
+            costPerPageEngagement = parseCurrency(row['每次粉絲專頁互動成本 (TWD)'] || row['Cost per Page Engagement'] || 0);
+            newMessagingConnections = parseCurrency(row['新的訊息聯繫對象'] || row['New Messaging Connections'] || 0);
+            // Handling the malformed or specific column for Cost per New Connection
+            // It might appear as " (TWD)" in some exports if column name is empty, or explicitly named
+            costPerNewMessagingConnection = parseCurrency(row['每位新訊息聯繫對象成本'] || row['Cost per New Messaging Connection'] || row[' (TWD)'] || 0);
+            messagingConversationsStarted = parseCurrency(row['訊息對話開始次數'] || row['Messaging Conversations Started'] || 0);
 
           } else {
             status = row['Campaign state'] || row['Ad group state'] || row['Status'] || row['廣告活動狀態'] || row['廣告群組狀態'] || 'Unknown';
@@ -141,6 +158,7 @@ export const parseCSV = (file: File): Promise<AdRow[]> => {
             spend = parseCurrency(row['Cost'] || row['費用']);
             conversions = parseCurrency(row['Conversions'] || row['轉換']);
             conversionValue = parseCurrency(row['Total conv. value'] || row['總轉換價值']);
+            budget = parseCurrency(row['Budget'] || row['預算']);
             
             // Google mapping approx
             linkClicks = clicks; 
@@ -185,6 +203,14 @@ export const parseCSV = (file: File): Promise<AdRow[]> => {
             websitePurchases,
             ctr, cpc, cpa, roas, linkCtr, linkCpc, conversionRate,
             cpm, frequency, costPerResult,
+            
+            // New Fields
+            budget,
+            costPerPageEngagement,
+            newMessagingConnections,
+            costPerNewMessagingConnection,
+            messagingConversationsStarted,
+
             campaignName,
             adGroupName,
             imageUrl,

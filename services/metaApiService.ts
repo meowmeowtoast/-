@@ -68,12 +68,41 @@ const getResultValue = (actions: any[], objective?: string): number => {
     return 0;
 };
 
+// Helper: Extract Image URL from complex creative object
+const getCreativeImageUrl = (creative: any): string | undefined => {
+    if (!creative) return undefined;
+    
+    // 1. Direct Image
+    if (creative.image_url) return creative.image_url;
+    
+    // 2. Thumbnail (Video)
+    if (creative.thumbnail_url) return creative.thumbnail_url;
+
+    // 3. Object Story Spec (Link Ads, Existing Posts)
+    const spec = creative.object_story_spec;
+    if (spec) {
+        // Link Data
+        if (spec.link_data) {
+            if (spec.link_data.picture) return spec.link_data.picture;
+            if (spec.link_data.image_hash) {
+                // Cannot resolve hash directly without another call, usually picture is present if public
+            }
+        }
+        // Video Data inside story
+        if (spec.video_data) {
+            if (spec.video_data.image_url) return spec.video_data.image_url;
+        }
+    }
+
+    return undefined;
+};
+
 // Helper: Generic Metrics Calculator
 const calculateMetrics = (
     item: any, 
     level: AdRow['level'], 
     effectiveStatus: string, // Raw effective_status from API
-    endTime: string | null | undefined, // ISO string for stop_time/end_time
+    structInfo: any, // Contains budget, endTime, etc.
     adImageMap?: Map<string, string>, 
     extraProps: Partial<AdRow> = {},
     objective?: string
@@ -112,21 +141,40 @@ const calculateMetrics = (
     const imageUrl = adImageMap && item.ad_id ? adImageMap.get(item.ad_id) : undefined;
 
     // --- Status Logic Fix ---
-    // 1. Normalize effective status
     let finalStatus = effectiveStatus ? (effectiveStatus.charAt(0).toUpperCase() + effectiveStatus.slice(1).toLowerCase()) : 'Unknown';
-    
-    // 2. Check for "Completed" based on End Time
-    // Only check if currently Active/In_Process to avoid overriding "Archived" or "Deleted"
     const isActiveStatus = ['Active', 'In_process', 'With_issues'].includes(finalStatus);
     
-    if (isActiveStatus && endTime) {
-        const end = new Date(endTime).getTime();
+    if (isActiveStatus && structInfo?.stopTime) {
+        const end = new Date(structInfo.stopTime).getTime();
         const now = Date.now();
-        // If end time is in the past, it's Completed
-        if (end < now) {
-            finalStatus = 'Completed';
-        }
+        if (end < now) finalStatus = 'Completed';
     }
+
+    // --- New Yangyu Metrics ---
+    // 1. Budget (Normalized to unit currency, API returns cents usually)
+    let budget = 0;
+    let budgetType = '';
+    if (structInfo?.daily_budget) {
+        budget = parseInt(structInfo.daily_budget, 10) / 100; // Assuming currency is matched (e.g. TWD cents to TWD)
+        budgetType = 'Daily';
+    } else if (structInfo?.lifetime_budget) {
+        budget = parseInt(structInfo.lifetime_budget, 10) / 100;
+        budgetType = 'Lifetime';
+    }
+
+    // 2. Messaging
+    const messagingConversationsStarted = parseFloat(actions.find((a: any) => a.action_type === 'onsite_conversion.messaging_conversation_started_7d')?.value || 0);
+    // Note: "New Messaging Connections" might be 'onsite_conversion.messaging_connection' or 'messaging_connections' depending on API version/attribution. 
+    // We check for common keys.
+    const newMessagingConnections = parseFloat(actions.find((a: any) => a.action_type === 'onsite_conversion.messaging_connection' || a.action_type === 'messaging_conversation_started_7d')?.value || 0);
+    // Cost per...
+    const costPerNewMessagingConnection = newMessagingConnections > 0 ? spend / newMessagingConnections : 0;
+
+    // 3. Post Engagement Cost
+    const postEngagement = parseFloat(actions.find((a: any) => a.action_type === 'post_engagement' || a.action_type === 'link_click' || a.action_type === 'post_reaction' || a.action_type === 'comment' || a.action_type === 'post_share')?.value || 0);
+    // Actually, 'post_engagement' aggregate action usually exists. If not, use generic engagement.
+    // For specific "Page Engagement", it's usually post_engagement.
+    const costPerPageEngagement = postEngagement > 0 ? spend / postEngagement : 0;
 
     return {
         id: `meta-${level}-${item.id || Math.random().toString(36).substr(2, 9)}`,
@@ -139,6 +187,15 @@ const calculateMetrics = (
         reach, linkClicks, websitePurchases,
         ctr, cpc, cpa, roas, linkCtr, linkCpc, conversionRate,
         cpm, frequency, costPerResult,
+        
+        // New Metrics
+        budget,
+        budgetType,
+        costPerPageEngagement,
+        newMessagingConnections,
+        costPerNewMessagingConnection,
+        messagingConversationsStarted,
+
         campaignName: item.campaign_name,
         adGroupName: item.adset_name,
         imageUrl,
@@ -183,22 +240,22 @@ export const fetchMetaAdsData = async (
     access_token: token
   });
 
-  // Structure Status Calls - NOW FETCHING TIME
-  // Campaign: stop_time
+  // Structure Status Calls - FETCH BUDGET
+  // Campaign: stop_time, daily_budget, lifetime_budget
   const campaignsUrl = `${BASE_URL}/act_${accountId}/campaigns?` + new URLSearchParams({
-      fields: 'name,effective_status,objective,stop_time',
+      fields: 'name,effective_status,objective,stop_time,daily_budget,lifetime_budget',
       limit: '500',
       access_token: token
   });
-  // AdSet: end_time
+  // AdSet: end_time, daily_budget, lifetime_budget
   const adsetsUrl = `${BASE_URL}/act_${accountId}/adsets?` + new URLSearchParams({
-      fields: 'name,effective_status,end_time,campaign_id',
+      fields: 'name,effective_status,end_time,campaign_id,daily_budget,lifetime_budget',
       limit: '500',
       access_token: token
   });
-  // Ads: status from Ad (inherits usually, but good to check)
+  // Ads - ADDED object_story_spec for better image extraction
   const adsUrl = `${BASE_URL}/act_${accountId}/ads?` + new URLSearchParams({
-    fields: 'name,effective_status,creative{thumbnail_url,image_url,title,body},adset_id',
+    fields: 'name,effective_status,creative{thumbnail_url,image_url,title,body,object_story_spec},adset_id',
     limit: '500',
     access_token: token
   });
@@ -246,36 +303,41 @@ export const fetchMetaAdsData = async (
   if (campData.error) throw new Error(`Meta API Error: ${campData.error.message}`);
 
   // --- Maps ---
-  // Store Status, Objective, AND End Time
   
-  interface CampInfo { status: string; objective: string; stopTime?: string }
+  interface CampInfo { status: string; objective: string; stopTime?: string; daily_budget?: string; lifetime_budget?: string }
   const campaignMap = new Map<string, CampInfo>();
   (campStruct.data || []).forEach((c: any) => {
       campaignMap.set(c.id, { 
           status: c.effective_status, 
           objective: c.objective,
-          stopTime: c.stop_time
+          stopTime: c.stop_time,
+          daily_budget: c.daily_budget,
+          lifetime_budget: c.lifetime_budget
       });
   });
 
-  interface AdSetInfo { status: string; endTime?: string; campaignId?: string }
+  interface AdSetInfo { status: string; endTime?: string; campaignId?: string; daily_budget?: string; lifetime_budget?: string }
   const adSetMap = new Map<string, AdSetInfo>();
   (setStruct.data || []).forEach((s: any) => {
       adSetMap.set(s.id, { 
           status: s.effective_status,
           endTime: s.end_time,
-          campaignId: s.campaign_id
+          campaignId: s.campaign_id,
+          daily_budget: s.daily_budget,
+          lifetime_budget: s.lifetime_budget
       });
   });
 
   const adStatusMap = new Map<string, string>();
   const adImageMap = new Map<string, string>();
-  const adParentMap = new Map<string, string>(); // Map Ad to AdSet to find end time
+  const adParentMap = new Map<string, string>(); 
   (adStruct.data || []).forEach((ad: any) => {
       adStatusMap.set(ad.id, ad.effective_status);
       adParentMap.set(ad.id, ad.adset_id);
-      if (ad.creative && (ad.creative.image_url || ad.creative.thumbnail_url)) {
-          adImageMap.set(ad.id, ad.creative.image_url || ad.creative.thumbnail_url);
+      
+      const imgUrl = getCreativeImageUrl(ad.creative);
+      if (imgUrl) {
+          adImageMap.set(ad.id, imgUrl);
       }
   });
 
@@ -286,7 +348,7 @@ export const fetchMetaAdsData = async (
       const info = campaignMap.get(item.campaign_id);
       const status = info?.status || 'UNKNOWN';
       const objective = item.objective || info?.objective;
-      return calculateMetrics(item, 'campaign', status, info?.stopTime, undefined, undefined, objective);
+      return calculateMetrics(item, 'campaign', status, info, undefined, undefined, objective);
   });
 
   // 2. AdSet Rows
@@ -295,21 +357,20 @@ export const fetchMetaAdsData = async (
       const campInfo = campaignMap.get(item.campaign_id); // Fallback objective
       const status = info?.status || 'UNKNOWN';
       const objective = item.objective || campInfo?.objective;
-      return calculateMetrics(item, 'adset', status, info?.endTime, undefined, undefined, objective);
+      return calculateMetrics(item, 'adset', status, { stopTime: info?.endTime, ...info }, undefined, undefined, objective);
   });
 
   // 3. Ad Rows
   const adRows = (adData.data || []).map((item: any) => {
       const status = adStatusMap.get(item.ad_id) || 'UNKNOWN';
       
-      // Get Parent AdSet Info for End Time logic
       const adSetId = item.adset_id || adParentMap.get(item.ad_id);
       const adSetInfo = adSetId ? adSetMap.get(adSetId) : undefined;
       const campInfo = campaignMap.get(item.campaign_id);
 
       const objective = item.objective || campInfo?.objective;
       
-      return calculateMetrics(item, 'ad', status, adSetInfo?.endTime, adImageMap, undefined, objective);
+      return calculateMetrics(item, 'ad', status, { stopTime: adSetInfo?.endTime }, adImageMap, undefined, objective);
   });
 
   // 4. Demographics

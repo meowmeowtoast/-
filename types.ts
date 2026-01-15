@@ -40,6 +40,14 @@ export interface AdRow {
   frequency: number;
   costPerResult: number; // Similar to CPA but explicitly labeled
   
+  // New Fields
+  budget?: number; // 預算
+  budgetType?: string; // Daily vs Lifetime
+  costPerPageEngagement?: number; // 每次粉絲專頁互動成本
+  newMessagingConnections?: number; // 新的訊息聯繫對象
+  costPerNewMessagingConnection?: number; // 每位新訊息聯繫對象成本
+  messagingConversationsStarted?: number; // 訊息對話開始次數
+  
   // Metadata
   campaignName?: string;
   adGroupName?: string; // Ad Set for Meta
