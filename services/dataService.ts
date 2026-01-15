@@ -80,6 +80,9 @@ export const parseCSV = (file: File): Promise<AdRow[]> => {
           let reach = 0;
           let linkClicks = 0;
           let websitePurchases = 0;
+          let cpm = 0;
+          let frequency = 0;
+          let costPerResult = 0;
 
           let campaignName = '';
           let adGroupName = '';
@@ -115,15 +118,18 @@ export const parseCSV = (file: File): Promise<AdRow[]> => {
             adGroupName = row['Ad Set Name'] || row['廣告組合名稱'] || '';
 
             impressions = parseCurrency(row['Impressions'] || row['曝光次數']);
-            clicks = parseCurrency(row['Link Clicks'] || row['連結點擊次數'] || row['Clicks (All)'] || row['點擊次數（全部）']);
+            clicks = parseCurrency(row['Clicks (All)'] || row['點擊次數（全部）'] || row['Clicks'] || row['點擊次數']);
             spend = parseCurrency(row['Amount Spent (TWD)'] || row['Amount Spent'] || row['Cost'] || row['花費金額 (TWD)'] || row['花費金額']);
             conversions = parseCurrency(row['Results'] || row['成果'] || row['Purchases'] || 0);
             conversionValue = parseCurrency(row['Purchase Conversion Value'] || row['總轉換價值'] || 0);
             
-            // New Fields Parsing
             reach = parseCurrency(row['Reach'] || row['觸及人數']);
             linkClicks = parseCurrency(row['Link Clicks'] || row['連結點擊次數']);
             websitePurchases = parseCurrency(row['Website Purchases'] || row['網站購買'] || row['Purchases'] || 0);
+            
+            cpm = parseCurrency(row['CPM (Cost per 1,000 Impressions) (TWD)'] || row['CPM（每千次廣告曝光成本） (TWD)'] || row['CPM'] || row['CPM (Cost per 1,000 Impressions)']);
+            frequency = parseCurrency(row['Frequency'] || row['頻率']);
+            costPerResult = parseCurrency(row['Cost per Result'] || row['每次成果成本'] || row['CPR']);
 
           } else {
             status = row['Campaign state'] || row['Ad group state'] || row['Status'] || row['廣告活動狀態'] || row['廣告群組狀態'] || 'Unknown';
@@ -135,9 +141,14 @@ export const parseCSV = (file: File): Promise<AdRow[]> => {
             spend = parseCurrency(row['Cost'] || row['費用']);
             conversions = parseCurrency(row['Conversions'] || row['轉換']);
             conversionValue = parseCurrency(row['Total conv. value'] || row['總轉換價值']);
+            
             // Google mapping approx
             linkClicks = clicks; 
-            reach = impressions; // Not accurate but fallback
+            reach = impressions; 
+            // Calc CPM for Google if not present
+            cpm = impressions > 0 ? (spend / impressions) * 1000 : 0;
+            frequency = 1; // Google usually doesn't provide freq in standard reports same way
+            costPerResult = conversions > 0 ? spend / conversions : 0;
           }
 
           // Calculations
@@ -152,6 +163,11 @@ export const parseCSV = (file: File): Promise<AdRow[]> => {
           const conversionRate = clicks > 0 ? (conversionBasis / clicks) * 100 : 0;
           
           const roas = spend > 0 ? conversionValue / spend : 0;
+
+          // If costPerResult wasn't in CSV, fallback to calculated CPA
+          if (!costPerResult && conversionBasis > 0) {
+              costPerResult = cpa;
+          }
 
           return {
             id: `${platform}-${level}-${idx}`,
@@ -168,6 +184,7 @@ export const parseCSV = (file: File): Promise<AdRow[]> => {
             linkClicks,
             websitePurchases,
             ctr, cpc, cpa, roas, linkCtr, linkCpc, conversionRate,
+            cpm, frequency, costPerResult,
             campaignName,
             adGroupName,
             imageUrl,
@@ -187,7 +204,6 @@ export const exportToExcel = (rows: AdRow[], filename: string = 'Ad_Report') => 
   const wsAll = XLSX.utils.json_to_sheet(rows);
   XLSX.utils.book_append_sheet(wb, wsAll, "總覽_Overview");
   
-  // Custom exports logic could go here, for now basic dump
   const append = (lvl: Level, sheetName: string) => {
       const data = rows.filter(r => r.level === lvl);
       if (data.length) {

@@ -1,5 +1,6 @@
+
 export type Platform = 'meta' | 'google' | 'unknown';
-export type Level = 'campaign' | 'adset' | 'ad' | 'demographics' | 'creative';
+export type Level = 'campaign' | 'adset' | 'ad' | 'creative' | 'age' | 'gender' | 'demographics';
 
 export interface AdRow {
   id: string;
@@ -21,6 +22,10 @@ export interface AdRow {
   linkClicks: number; // 連結點擊
   websitePurchases: number; // 網站購買
   
+  // Demographics
+  age?: string;
+  gender?: string;
+  
   // Calculated Rates
   ctr: number;
   cpc: number;
@@ -29,6 +34,11 @@ export interface AdRow {
   linkCtr: number; // 連結 CTR
   linkCpc: number; // 連結 CPC
   conversionRate: number; // 轉換率 (CVR)
+
+  // Additional Metrics for Yangyu Default
+  cpm: number;
+  frequency: number;
+  costPerResult: number; // Similar to CPA but explicitly labeled
   
   // Metadata
   campaignName?: string;
@@ -43,6 +53,13 @@ export interface MetaConfig {
   accountId: string;
   accountName: string;
   token: string;
+}
+
+export interface StoredToken {
+  id: string;
+  alias: string; // User defined name e.g. "My Personal Account"
+  token: string;
+  createdAt: number;
 }
 
 export interface Project {

@@ -2,41 +2,58 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Upload, Download, Settings, RefreshCw, Layers, Plus, Trash2, Sparkles, 
   Folder, FileText, MoreHorizontal, Edit2, Search, X, ChevronRight, GripVertical, Filter,
-  PanelLeftClose, HelpCircle, FileQuestion, ImageIcon, ExternalLink, Facebook, Calendar, Link
+  PanelLeftClose, HelpCircle, FileQuestion, ImageIcon, ExternalLink, Facebook, Calendar, Link,
+  Users, Key, ArrowUpDown, ChevronUp, ChevronDown, AlertTriangle
 } from 'lucide-react';
 import { parseCSV, exportToExcel } from './services/dataService';
 import { generateInsights } from './services/geminiService';
 import { fetchAdAccounts, fetchMetaAdsData } from './services/metaApiService';
-import { AdRow, ColumnDef, Preset, Level, Project } from './types';
+import { AdRow, ColumnDef, Preset, Level, Project, StoredToken } from './types';
 import { Button, Card, Badge, Input, Checkbox, cn, Dialog, ToastContainer, ToastMessage, Label, Select } from './components/LinearUI';
+import { DateRangePicker } from './components/DateRangePicker';
 
 // --- Constants ---
+const APP_TITLE = "YANGYU 秧語廣告儀表板";
+
+// Hardcoded Dev Token (Updated to Long-Lived Token)
+const DEV_TOKEN = "EAAMzntvPNkYBQQLtoUXY3Hz5yAZCYVZCdtYlvG6czN3ZCc09pmfbJWqZCqTmEKZBCAtF3sDGqZA1FY6gz8SACGLS5EqwL1qxn7tMFmmCkIO0gkuJMwxw8N4ncTO8Mkg4RW5iA7wemin93qP8WkeZCws4bENj4fpULc9TWVpavYg2UJ33EYjeyYC0VZC0VxDXUQTwWoFhFfNqR1J0NueaZANLAKkTIbyBSQh925fJlZAb4DUcZCi68gdo9mSlh2MvGTBWGZBM5Hss45k5SxQqGdNTMvzJ08WN1GcsPrFhFRNhgK8ZD";
+
 const AVAILABLE_COLUMNS: ColumnDef[] = [
-  { id: 'campaignName', label: '行銷活動名稱 (Campaign)', type: 'text', width: 200 },
-  { id: 'imageUrl', label: '素材 (Preview)', type: 'image', width: 80 },
-  { id: 'name', label: '名稱 (Name)', type: 'text', width: 250 }, // For AdSet/Ad Name
-  { id: 'status', label: '投遞狀態 (Status)', type: 'text' },
+  { id: 'campaignName', label: '行銷活動名稱', type: 'text', width: 200 },
+  { id: 'imageUrl', label: '素材預覽', type: 'image', width: 80 },
+  { id: 'name', label: '名稱', type: 'text', width: 250 }, 
+  { id: 'status', label: '投遞狀態', type: 'text' },
   
   // Engagement
-  { id: 'reach', label: '觸及人數 (Reach)', type: 'number' },
-  { id: 'clicks', label: '點擊次數 (Clicks All)', type: 'number' },
-  { id: 'impressions', label: '曝光次數 (Impressions)', type: 'number' },
-  { id: 'ctr', label: 'CTR (All)', type: 'percent' },
-  { id: 'cpc', label: 'CPC (All)', type: 'currency' },
+  { id: 'impressions', label: '曝光次數', type: 'number' },
+  { id: 'reach', label: '觸及人數', type: 'number' },
+  { id: 'clicks', label: '點擊次數 (全部)', type: 'number' }, // Updated Label
+  { id: 'ctr', label: 'CTR (全部)', type: 'percent' },
+  { id: 'cpc', label: 'CPC (全部)', type: 'currency' },
   
   // Link Specific
-  { id: 'linkClicks', label: '連結點擊 (Link Clicks)', type: 'number' },
+  { id: 'linkClicks', label: '連結點擊', type: 'number' },
   { id: 'linkCtr', label: '連結 CTR', type: 'percent' },
   { id: 'linkCpc', label: '連結 CPC', type: 'currency' },
   
-  // Conversions
-  { id: 'conversions', label: '成果 (Results)', type: 'number' },
-  { id: 'websitePurchases', label: '網站購買 (Purchases)', type: 'number' },
-  { id: 'cpa', label: 'CPA (Cost/Result)', type: 'currency' },
-  { id: 'conversionRate', label: '轉換率 (CVR)', type: 'percent' },
-  { id: 'roas', label: 'ROAS', type: 'number' },
+  // Conversions & Costs
+  { id: 'spend', label: '花費金額', type: 'currency' },
+  { id: 'conversions', label: '成果', type: 'number' },
+  { id: 'costPerResult', label: '每次成果成本', type: 'currency' },
+  { id: 'cpm', label: 'CPM (每千次曝光成本)', type: 'currency' },
+  { id: 'frequency', label: '頻率', type: 'number' },
   
-  { id: 'spend', label: '花費金額 (Spend)', type: 'currency' },
+  { id: 'websitePurchases', label: '網站購買', type: 'number' },
+  { id: 'cpa', label: 'CPA', type: 'currency' },
+  { id: 'conversionRate', label: '轉換率', type: 'percent' },
+  { id: 'roas', label: 'ROAS', type: 'number' },
+];
+
+const DEMO_COLUMNS = [
+    'campaignName', 'name', 
+    'clicks', 'impressions', 'ctr', 'cpc', 
+    'linkClicks', 'linkCtr', 'linkCpc', 
+    'websitePurchases', 'cpa', 'conversionRate', 'spend'
 ];
 
 const DEFAULT_PRESETS: Preset[] = [
@@ -45,7 +62,7 @@ const DEFAULT_PRESETS: Preset[] = [
     id: 'campaign_report', 
     name: '廣告活動報表', 
     columns: [
-        'name', // Campaign Name (at campaign level 'name' is campaign name)
+        'name', 
         'status', 'reach', 'clicks', 'impressions', 'ctr', 'cpc', 
         'linkClicks', 'linkCtr', 'linkCpc', 
         'conversions', 'cpa', 'conversionRate', 'spend'
@@ -56,7 +73,7 @@ const DEFAULT_PRESETS: Preset[] = [
     id: 'audience_report', 
     name: '受眾/組合報表', 
     columns: [
-        'campaignName', 'name', // AdSet Name
+        'campaignName', 'name', 
         'status', 'clicks', 'impressions', 'ctr', 'cpc',
         'linkClicks', 'linkCtr', 'linkCpc',
         'websitePurchases', 'cpa', 'conversionRate', 'spend'
@@ -67,12 +84,46 @@ const DEFAULT_PRESETS: Preset[] = [
     id: 'creative_report', 
     name: '素材/廣告報表', 
     columns: [
-        'campaignName', 'imageUrl', 'name', // Ad Name/Headline
+        'campaignName', 'imageUrl', 'name',
         'clicks', 'impressions', 'ctr', 'cpc',
         'linkClicks', 'linkCtr', 'linkCpc',
         'websitePurchases', 'cpa', 'conversionRate', 'spend'
     ] 
   },
+  // 4. Age Report
+  {
+      id: 'age_report',
+      name: '年齡分佈報表',
+      columns: DEMO_COLUMNS
+  },
+  // 5. Gender Report
+  {
+      id: 'gender_report',
+      name: '性別分佈報表',
+      columns: DEMO_COLUMNS
+  },
+  // 6. Yangyu Default (Matching provided CSV)
+  {
+      id: 'yangyu_default',
+      name: '秧語預設',
+      columns: [
+          'name', // Campaign Name
+          'status',
+          'impressions',
+          'reach',
+          'clicks', // All clicks
+          'ctr', // All CTR
+          'cpc', // All CPC
+          'linkClicks',
+          'linkCtr',
+          'linkCpc',
+          'spend',
+          'conversions',
+          'costPerResult',
+          'cpm',
+          'frequency'
+      ]
+  }
 ];
 
 const getLast30Days = () => {
@@ -138,23 +189,54 @@ const App: React.FC = () => {
   });
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   
+  // Tokens State
+  const [storedTokens, setStoredTokens] = useState<StoredToken[]>(() => {
+      const saved = localStorage.getItem('adflux_tokens');
+      let tokens = saved ? JSON.parse(saved) : [];
+      // Inject Dev Token if not present or different
+      // Since token might change in code, we update it if it exists under the 'dev-auto-token' ID
+      const devIndex = tokens.findIndex((t: StoredToken) => t.id === 'dev-auto-token');
+      if (devIndex >= 0) {
+          tokens[devIndex].token = DEV_TOKEN;
+      } else {
+          tokens = [{
+              id: 'dev-auto-token',
+              alias: '秧語 (Dev)',
+              token: DEV_TOKEN,
+              createdAt: Date.now()
+          }, ...tokens];
+      }
+      return tokens;
+  });
+
   // UI State
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<Level | 'all'>('campaign'); // Default to Campaign
+  // Added 'yangyu' as a valid tab state
+  const [activeTab, setActiveTab] = useState<Level | 'all' | 'yangyu'>('campaign'); 
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [isResizing, setIsResizing] = useState(false);
   
+  // Filter States
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'delivered'>('all');
+
   // Modals
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [isMetaModalOpen, setIsMetaModalOpen] = useState(false);
+  const [isTokenManagerOpen, setIsTokenManagerOpen] = useState(false);
   const [showExportHelp, setShowExportHelp] = useState(false);
+  const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
   
   // Meta API State
   const [metaToken, setMetaToken] = useState("");
+  const [selectedTokenId, setSelectedTokenId] = useState("");
   const [metaAccounts, setMetaAccounts] = useState<any[]>([]);
   const [selectedMetaAccount, setSelectedMetaAccount] = useState("");
   
+  // Token Manager Inputs
+  const [newTokenAlias, setNewTokenAlias] = useState("");
+  const [newTokenValue, setNewTokenValue] = useState("");
+
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [newProjectName, setNewProjectName] = useState("");
 
@@ -163,11 +245,12 @@ const App: React.FC = () => {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
 
-  // Column Management
+  // Column Management & Sorting
   const [activePresetId, setActivePresetId] = useState<string>('campaign_report');
   const [customPresets, setCustomPresets] = useState<Preset[]>([]);
   const [visibleColumns, setVisibleColumns] = useState<string[]>(DEFAULT_PRESETS[0].columns);
   const [isColumnModalOpen, setIsColumnModalOpen] = useState(false);
+  const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null);
   
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<string | null>(null);
@@ -178,17 +261,26 @@ const App: React.FC = () => {
   }, [projects]);
 
   useEffect(() => {
+    localStorage.setItem('adflux_tokens', JSON.stringify(storedTokens));
+  }, [storedTokens]);
+
+  useEffect(() => {
     const storedPresets = localStorage.getItem('adflux_presets');
     if (storedPresets) {
       setCustomPresets(JSON.parse(storedPresets));
     }
   }, []);
 
-  // When Tab changes, auto-switch to relevant preset for better UX
+  // Auto-switch presets based on tabs & Reset Sort
   useEffect(() => {
       if (activeTab === 'campaign') applyPreset('campaign_report');
       if (activeTab === 'adset') applyPreset('audience_report');
       if (activeTab === 'ad' || activeTab === 'creative') applyPreset('creative_report');
+      if (activeTab === 'age') applyPreset('age_report');
+      if (activeTab === 'gender') applyPreset('gender_report');
+      if (activeTab === 'yangyu') applyPreset('yangyu_default'); // Apply Yangyu Preset
+      
+      setSortConfig(null); // Reset sort when changing tabs
   }, [activeTab]);
 
   // Sidebar Resizing
@@ -231,22 +323,99 @@ const App: React.FC = () => {
     [projects, activeProjectId]
   );
 
+  // Aggregated Demographics Data
+  const demographicData = useMemo(() => {
+    if (!activeProject) return null;
+    if (activeTab !== 'age' && activeTab !== 'gender') return null;
+
+    const relevantRows = activeProject.data.filter(r => r.level === activeTab);
+    const groups: Record<string, any> = {};
+
+    relevantRows.forEach(row => {
+        const key = row.name; 
+        if (!groups[key]) {
+            groups[key] = { 
+                name: key,
+                impressions: 0, clicks: 0, spend: 0, linkClicks: 0, websitePurchases: 0, conversions: 0, conversionValue: 0 
+            };
+        }
+        groups[key].impressions += row.impressions;
+        groups[key].clicks += row.clicks;
+        groups[key].spend += row.spend;
+        groups[key].linkClicks += row.linkClicks;
+        groups[key].websitePurchases += row.websitePurchases;
+        groups[key].conversions += row.conversions;
+        groups[key].conversionValue += row.conversionValue;
+    });
+
+    // Helper for rates
+    const calcRates = (r: any) => ({
+        ...r,
+        ctr: r.impressions ? (r.clicks / r.impressions) * 100 : 0,
+        cpc: r.clicks ? r.spend / r.clicks : 0,
+        linkCtr: r.impressions ? (r.linkClicks / r.impressions) * 100 : 0,
+        linkCpc: r.linkClicks ? r.spend / r.linkClicks : 0,
+        cpa: (r.conversions || r.websitePurchases) ? r.spend / (r.conversions || r.websitePurchases) : 0,
+        conversionRate: r.clicks ? ((r.conversions || r.websitePurchases) / r.clicks) * 100 : 0,
+    });
+
+    let result = Object.values(groups).map(calcRates);
+
+    // Sort
+    result.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+
+    // Grand Total
+    const total = result.reduce((acc, curr) => ({
+        impressions: acc.impressions + curr.impressions,
+        clicks: acc.clicks + curr.clicks,
+        spend: acc.spend + curr.spend,
+        linkClicks: acc.linkClicks + curr.linkClicks,
+        websitePurchases: acc.websitePurchases + curr.websitePurchases,
+        conversions: acc.conversions + curr.conversions,
+    }), { impressions: 0, clicks: 0, spend: 0, linkClicks: 0, websitePurchases: 0, conversions: 0 });
+
+    const totalRow = {
+        id: 'total',
+        name: '總計',
+        ...total,
+        ...calcRates(total) // calc rates for total
+    };
+
+    return { rows: result, total: totalRow };
+  }, [activeProject, activeTab]);
+
   const filteredData = useMemo(() => {
     if (!activeProject) return [];
     
-    let data = activeProject.data;
+    // If showing demographics aggregated, skip this standard filtering
+    if (activeTab === 'age' || activeTab === 'gender') return [];
+
+    let data = [...activeProject.data];
 
     // 1. Tab Filter
     if (activeTab !== 'all') {
-        // If tab is 'creative', we map to 'ad' or 'creative' level
         if (activeTab === 'creative') {
              data = data.filter(row => row.level === 'ad' || row.level === 'creative');
+        } else if (activeTab === 'yangyu') {
+             // Yangyu Default preset usually implies Campaign Level view (based on the CSV)
+             data = data.filter(row => row.level === 'campaign');
         } else {
              data = data.filter(row => row.level === activeTab);
         }
     }
 
-    // 2. Search Query Filter
+    // 2. Status Filter
+    if (statusFilter === 'active') {
+        data = data.filter(row => {
+            const s = row.status.toLowerCase();
+            return s === 'active' || s === 'enabled' || s === 'in_process' || s === 'with_issues';
+        });
+    } else if (statusFilter === 'delivered') {
+        // "Delivered" usually implies impressions > 0
+        data = data.filter(row => row.impressions > 0);
+    }
+
+    // 3. Search Query Filter
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
       data = data.filter(row => 
@@ -257,18 +426,43 @@ const App: React.FC = () => {
       );
     }
 
-    // 3. Sorting (Crucial for Merge Logic)
-    // We must sort by Campaign Name first so we can merge cells visually
-    data.sort((a, b) => {
-        const cA = a.campaignName || a.name || '';
-        const cB = b.campaignName || b.name || '';
-        return cA.localeCompare(cB);
-    });
+    // 4. Sorting
+    if (sortConfig) {
+        data.sort((a, b) => {
+            const aVal = a[sortConfig.key];
+            const bVal = b[sortConfig.key];
+            
+            // Handle null/undefined
+            if (aVal === bVal) return 0;
+            if (aVal === null || aVal === undefined) return 1;
+            if (bVal === null || bVal === undefined) return -1;
+
+            if (aVal < bVal) return sortConfig.direction === 'asc' ? -1 : 1;
+            if (aVal > bVal) return sortConfig.direction === 'asc' ? 1 : -1;
+            return 0;
+        });
+    } else {
+        // Default: Sort by Campaign Name for merging logic
+        data.sort((a, b) => {
+            const cA = a.campaignName || a.name || '';
+            const cB = b.campaignName || b.name || '';
+            return cA.localeCompare(cB);
+        });
+    }
 
     return data;
-  }, [activeProject, activeTab, searchQuery]);
+  }, [activeProject, activeTab, searchQuery, sortConfig, statusFilter]);
 
-  // ... (Project Actions: createProject, updateProjectName, deleteProject, handleUpload - Same as before)
+  // Sorting Handler
+  const requestSort = (key: string) => {
+      let direction: 'asc' | 'desc' = 'desc'; // Default to desc (good for numbers)
+      if (sortConfig && sortConfig.key === key && sortConfig.direction === 'desc') {
+          direction = 'asc';
+      }
+      setSortConfig({ key, direction });
+  };
+
+  // Actions
   const createProject = () => {
     const newProject: Project = {
       id: crypto.randomUUID(),
@@ -288,10 +482,18 @@ const App: React.FC = () => {
     setEditingProjectId(null);
   };
 
-  const deleteProject = (id: string) => {
-    if (confirm("確定要刪除此專案嗎？這將無法復原。")) {
-      setProjects(prev => prev.filter(p => p.id !== id));
-      if (activeProjectId === id) setActiveProjectId(null);
+  // Initiate delete process
+  const initiateDeleteProject = (id: string) => {
+      setProjectToDelete(id);
+  };
+
+  // Confirm delete
+  const confirmDeleteProject = () => {
+    if (projectToDelete) {
+      setProjects(prev => prev.filter(p => p.id !== projectToDelete));
+      if (activeProjectId === projectToDelete) setActiveProjectId(null);
+      addToast("專案已刪除", "success");
+      setProjectToDelete(null);
     }
   };
 
@@ -307,11 +509,7 @@ const App: React.FC = () => {
       }
       setProjects(prev => prev.map(p => {
         if (p.id === activeProjectId) {
-          return {
-            ...p,
-            data: [...p.data, ...newRows],
-            updatedAt: Date.now()
-          };
+          return { ...p, data: [...p.data, ...newRows], updatedAt: Date.now() };
         }
         return p;
       }));
@@ -325,16 +523,50 @@ const App: React.FC = () => {
     }
   };
 
-  // ... (Meta API Actions: handleFetchAccounts, handleConnectMeta, handleSyncMeta - Same as before)
+  // --- Token Management ---
+  const saveToken = () => {
+      if (!newTokenAlias || !newTokenValue) return addToast("請輸入名稱與 Token", "error");
+      const newToken: StoredToken = {
+          id: crypto.randomUUID(),
+          alias: newTokenAlias,
+          token: newTokenValue,
+          createdAt: Date.now()
+      };
+      setStoredTokens(prev => [...prev, newToken]);
+      setNewTokenAlias("");
+      setNewTokenValue("");
+      addToast("Token 已儲存", "success");
+  };
+
+  const deleteToken = (id: string) => {
+      setStoredTokens(prev => prev.filter(t => t.id !== id));
+      if (selectedTokenId === id) setSelectedTokenId("");
+  };
+
+  // --- Meta API ---
   const handleFetchAccounts = async () => {
-    if (!metaToken) return addToast("請輸入 Access Token", 'error');
+    // Determine which token to use
+    let tokenToUse = metaToken;
+    if (selectedTokenId) {
+        const stored = storedTokens.find(t => t.id === selectedTokenId);
+        if (stored) tokenToUse = stored.token;
+    }
+
+    if (!tokenToUse) return addToast("請輸入或選擇 Access Token", 'error');
+    
     setLoading(true);
     try {
-        const accounts = await fetchAdAccounts(metaToken);
+        const accounts = await fetchAdAccounts(tokenToUse);
         setMetaAccounts(accounts);
         if (accounts.length > 0) setSelectedMetaAccount(accounts[0].account_id);
     } catch (e: any) {
-        addToast(`取得帳號失敗: ${e.message}`, 'error');
+        // Better error handling for token issues
+        const errorMsg = e.message || "";
+        if (errorMsg.includes("Session has expired") || errorMsg.includes("Error validating access token")) {
+            addToast("您的 Access Token 已過期或失效。請使用長效 Token 或重新取得。", 'error');
+        } else {
+            addToast(`取得帳號失敗: ${errorMsg}`, 'error');
+        }
     } finally {
         setLoading(false);
     }
@@ -342,16 +574,24 @@ const App: React.FC = () => {
 
   const handleConnectMeta = async () => {
       if (!selectedMetaAccount) return;
+      
+      let tokenToUse = metaToken;
+      if (selectedTokenId) {
+          const stored = storedTokens.find(t => t.id === selectedTokenId);
+          if (stored) tokenToUse = stored.token;
+      }
+
       const account = metaAccounts.find(a => a.account_id === selectedMetaAccount);
-      if (!account) return;
+      if (!account || !tokenToUse) return;
+
       setLoading(true);
       try {
-          const rows = await fetchMetaAdsData(metaToken, selectedMetaAccount, dateRange.start, dateRange.end);
+          const rows = await fetchMetaAdsData(tokenToUse, selectedMetaAccount, dateRange.start, dateRange.end);
           const newProject: Project = {
               id: crypto.randomUUID(),
               name: `Meta: ${account.name}`,
               data: rows,
-              metaConfig: { accountId: account.account_id, accountName: account.name, token: metaToken },
+              metaConfig: { accountId: account.account_id, accountName: account.name, token: tokenToUse },
               createdAt: Date.now(),
               updatedAt: Date.now()
           };
@@ -360,7 +600,12 @@ const App: React.FC = () => {
           setIsMetaModalOpen(false);
           addToast("成功連結 Meta 帳號並同步數據", 'success');
       } catch (e: any) {
-          addToast(`同步失敗: ${e.message}`, 'error');
+          const errorMsg = e.message || "";
+          if (errorMsg.includes("Session has expired")) {
+              addToast("Access Token 已過期。請在 Token 管理更新您的金鑰。", 'error');
+          } else {
+              addToast(`同步失敗: ${errorMsg}`, 'error');
+          }
       } finally {
           setLoading(false);
       }
@@ -370,16 +615,26 @@ const App: React.FC = () => {
       if (!activeProject?.metaConfig) return;
       setLoading(true);
       try {
+          // Use current dateRange from state, not from the project config
           const rows = await fetchMetaAdsData(
-              activeProject.metaConfig.token, activeProject.metaConfig.accountId, dateRange.start, dateRange.end
+              activeProject.metaConfig.token, 
+              activeProject.metaConfig.accountId, 
+              dateRange.start, 
+              dateRange.end
           );
           setProjects(prev => prev.map(p => {
-             if (p.id === activeProject.id) return { ...p, data: rows, updatedAt: Date.now() };
+             // Force update the data array to trigger re-renders
+             if (p.id === activeProject.id) return { ...p, data: [...rows], updatedAt: Date.now() };
              return p;
           }));
           addToast("數據已更新至最新", 'success');
       } catch (e: any) {
-          addToast(`更新失敗: ${e.message}`, 'error');
+          const errorMsg = e.message || "";
+          if (errorMsg.includes("Session has expired")) {
+              addToast("同步失敗：您的 Token 已過期，請更新 Token。", 'error');
+          } else {
+              addToast(`更新失敗: ${errorMsg}`, 'error');
+          }
       } finally {
           setLoading(false);
       }
@@ -439,14 +694,32 @@ const App: React.FC = () => {
   const getTabLabel = (tab: string) => {
     switch (tab) {
         case 'all': return '總覽';
-        case 'campaign': return '廣告活動 (Campaigns)';
-        case 'adset': return '廣告受眾 (Audience)';
-        case 'ad': return '廣告 (Ads)';
-        case 'creative': return '素材表現 (Creative)';
-        case 'demographics': return '客層表現 (Demographics)';
+        case 'campaign': return '廣告活動';
+        case 'adset': return '廣告受眾';
+        case 'ad': return '廣告';
+        case 'creative': return '素材表現';
+        case 'gender': return '性別';
+        case 'age': return '年齡';
+        case 'yangyu': return '秧語預設'; // Label for new tab
+        case 'demographics': return '客層表現';
         default: return tab;
     }
   };
+
+  // Specific column config for Demographics table
+  const DEMO_TABLE_COLS: {id: string, label: string, type: ColumnDef['type']}[] = [
+      { id: 'clicks', label: '點擊次數', type: 'number' },
+      { id: 'impressions', label: '曝光次數', type: 'number' },
+      { id: 'ctr', label: 'CTR', type: 'percent' },
+      { id: 'cpc', label: 'CPC', type: 'currency' },
+      { id: 'linkClicks', label: '連結點擊', type: 'number' },
+      { id: 'linkCtr', label: '連結CTR', type: 'percent' },
+      { id: 'linkCpc', label: '連結CPC', type: 'currency' },
+      { id: 'websitePurchases', label: '網站購買', type: 'number' },
+      { id: 'cpa', label: 'CPA', type: 'currency' },
+      { id: 'conversionRate', label: '轉換率', type: 'percent' },
+      { id: 'spend', label: '花費金額', type: 'currency' },
+  ];
 
   return (
     <div className="flex h-screen bg-[#09090b] text-zinc-300 font-sans overflow-hidden selection:bg-indigo-500/30">
@@ -459,8 +732,22 @@ const App: React.FC = () => {
          </div>
       </Dialog>
 
+      <Dialog isOpen={!!projectToDelete} onClose={() => setProjectToDelete(null)} title="確認刪除專案">
+          <div className="space-y-4">
+              <div className="flex items-center gap-3 p-3 bg-red-950/30 border border-red-900/50 rounded-md text-red-300">
+                  <AlertTriangle size={20} className="shrink-0" />
+                  <p className="text-sm">確定要刪除此專案嗎？此動作無法復原，所有數據將會遺失。</p>
+              </div>
+              <div className="flex justify-end gap-2">
+                  <Button variant="ghost" onClick={() => setProjectToDelete(null)}>取消</Button>
+                  <Button variant="danger" onClick={confirmDeleteProject}>確認刪除</Button>
+              </div>
+          </div>
+      </Dialog>
+
       <Dialog isOpen={isUploadModalOpen} onClose={() => { setIsUploadModalOpen(false); setShowExportHelp(false); }} title="匯入廣告報表 (CSV)">
-        <div className="space-y-4">
+          {/* ... Upload Content ... */}
+          <div className="space-y-4">
             {!showExportHelp ? (
                 <>
                     <FileUploadZone onUpload={handleUpload} compact />
@@ -477,22 +764,65 @@ const App: React.FC = () => {
                         <h4 className="text-sm font-medium text-zinc-100">匯出素材與影像設定</h4>
                         <button onClick={() => setShowExportHelp(false)} className="text-xs text-zinc-500 hover:text-zinc-300">返回</button>
                     </div>
-                    {/* ... Help content (Same as before) ... */}
+                     {/* ... Help Text ... */}
+                     <p className="text-xs text-zinc-400">請確保 CSV 包含正確的 Header 欄位。</p>
                 </div>
             )}
         </div>
       </Dialog>
 
+      {/* Token Manager Modal */}
+      <Dialog isOpen={isTokenManagerOpen} onClose={() => setIsTokenManagerOpen(false)} title="存取權杖 (Token) 管理">
+          <div className="space-y-6">
+              <div className="space-y-3 p-4 bg-zinc-900/50 rounded-lg border border-zinc-800">
+                  <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">新增 Token</h4>
+                  <div className="space-y-2">
+                      <Input placeholder="名稱 (例如: 個人帳號, 公司帳號)" value={newTokenAlias} onChange={e => setNewTokenAlias(e.target.value)} />
+                      <Input type="password" placeholder="EAA..." value={newTokenValue} onChange={e => setNewTokenValue(e.target.value)} className="font-mono text-xs"/>
+                      <Button onClick={saveToken} disabled={!newTokenAlias || !newTokenValue} className="w-full">儲存</Button>
+                  </div>
+              </div>
+              <div className="space-y-2">
+                  <h4 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">已儲存的 Token</h4>
+                  {storedTokens.length === 0 && <p className="text-xs text-zinc-600 italic">尚無儲存的 Token</p>}
+                  {storedTokens.map(token => (
+                      <div key={token.id} className="flex items-center justify-between p-3 rounded-md bg-zinc-900 border border-zinc-800">
+                          <div>
+                              <div className="text-sm font-medium text-zinc-200">{token.alias}</div>
+                              <div className="text-[10px] text-zinc-500 font-mono">...{token.token.slice(-8)}</div>
+                          </div>
+                          <button onClick={() => deleteToken(token.id)} className="text-zinc-500 hover:text-red-400 p-1"><Trash2 size={14} /></button>
+                      </div>
+                  ))}
+              </div>
+          </div>
+      </Dialog>
+
+      {/* Connect Meta Modal */}
       <Dialog isOpen={isMetaModalOpen} onClose={() => setIsMetaModalOpen(false)} title="連結 Meta 廣告帳號">
          <div className="space-y-6">
-             {/* ... Meta Modal Content (Same as before) ... */}
              <div className="space-y-3">
-                 <Label>1. 輸入 Access Token</Label>
-                 <div className="flex gap-2">
-                     <Input type="password" placeholder="EAA..." value={metaToken} onChange={(e) => setMetaToken(e.target.value)} className="font-mono text-xs" />
-                     <Button onClick={handleFetchAccounts} disabled={loading}>{loading ? <RefreshCw className="animate-spin" size={14}/> : "取得帳號"}</Button>
+                 <div className="flex justify-between items-center">
+                    <Label>1. 選擇或輸入 Access Token</Label>
+                    <button onClick={() => setIsTokenManagerOpen(true)} className="text-[10px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1"><Settings size={10}/> 管理 Token</button>
                  </div>
+                 
+                 {storedTokens.length > 0 && (
+                     <Select value={selectedTokenId} onChange={(e) => { setSelectedTokenId(e.target.value); setMetaToken(""); }} className="mb-2">
+                         <option value="">-- 直接輸入 Token --</option>
+                         {storedTokens.map(t => <option key={t.id} value={t.id}>{t.alias}</option>)}
+                     </Select>
+                 )}
+
+                 {!selectedTokenId && (
+                    <Input type="password" placeholder="EAA..." value={metaToken} onChange={(e) => setMetaToken(e.target.value)} className="font-mono text-xs" />
+                 )}
+                 
+                 <Button onClick={handleFetchAccounts} disabled={loading} className="w-full mt-2">
+                    {loading ? <RefreshCw className="animate-spin" size={14}/> : "取得帳號列表"}
+                 </Button>
              </div>
+
              {metaAccounts.length > 0 && (
                 <div className="space-y-3 animate-in fade-in slide-in-from-top-2">
                     <Label>2. 選擇廣告帳號</Label>
@@ -512,17 +842,21 @@ const App: React.FC = () => {
          </div>
       </Dialog>
 
-      {/* Sidebar (Same structure) */}
+      {/* Sidebar */}
       <aside 
         style={{ width: isSidebarOpen ? sidebarWidth : 0 }}
         className={cn("flex-shrink-0 border-r border-zinc-800 bg-[#09090b] flex flex-col transition-all duration-300 ease-in-out relative group/sidebar", !isSidebarOpen && "w-0 border-r-0 overflow-hidden")}
       >
-        <div className="h-14 flex items-center px-4 border-b border-zinc-800 gap-2 overflow-hidden whitespace-nowrap">
-          <div className="h-6 w-6 bg-indigo-500/20 rounded flex items-center justify-center border border-indigo-500/30 flex-shrink-0">
-            <Layers className="text-indigo-400" size={14} />
+        <div className="h-14 flex items-center justify-between px-4 border-b border-zinc-800 gap-2 overflow-hidden whitespace-nowrap">
+          <div className="flex items-center gap-2">
+            <div className="h-6 w-6 bg-indigo-500/20 rounded flex items-center justify-center border border-indigo-500/30 flex-shrink-0">
+                <Layers className="text-indigo-400" size={14} />
+            </div>
+            <span className="font-semibold text-zinc-100 tracking-tight text-sm">{APP_TITLE}</span>
           </div>
-          <span className="font-semibold text-zinc-100 tracking-tight">AdFlux</span>
+          <button onClick={() => setIsSidebarOpen(false)} className="p-1.5 hover:bg-zinc-800 rounded text-zinc-500 hover:text-zinc-300 transition-colors"><PanelLeftClose size={16} /></button>
         </div>
+
         <div className="p-3 space-y-2 border-b border-zinc-800">
             <Button variant="secondary" className="w-full justify-start text-xs h-8 gap-2 bg-zinc-900 hover:bg-zinc-800" onClick={createProject}>
                 <Plus size={14} /><span>空白專案 (CSV)</span>
@@ -532,7 +866,9 @@ const App: React.FC = () => {
             </Button>
         </div>
         <div className="flex-1 overflow-y-auto py-2 px-3 space-y-1 overflow-x-hidden">
-          {/* ... Project List ... */}
+          <div className="flex items-center justify-between px-2 mb-2">
+            <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider whitespace-nowrap">專案列表</span>
+          </div>
           {projects.map(project => (
             <div 
               key={project.id}
@@ -545,16 +881,17 @@ const App: React.FC = () => {
               ) : <span className="truncate flex-1">{project.name}</span>}
               <div className={cn("hidden group-hover:flex items-center gap-1 absolute right-2 bg-zinc-800/80 rounded pl-1", activeProjectId === project.id && "bg-transparent")}>
                 <button onClick={(e) => { e.stopPropagation(); setEditingProjectId(project.id); setNewProjectName(project.name); }} className="p-1 hover:text-indigo-400"><Edit2 size={12} /></button>
-                <button onClick={(e) => { e.stopPropagation(); deleteProject(project.id); }} className="p-1 hover:text-red-400"><Trash2 size={12} /></button>
+                <button onClick={(e) => { e.stopPropagation(); initiateDeleteProject(project.id); }} className="p-1 hover:text-red-400"><Trash2 size={12} /></button>
               </div>
             </div>
           ))}
         </div>
-        {/* ... Sidebar Footer & Resizer ... */}
-         <div className="p-3 border-t border-zinc-800 flex flex-col gap-2">
-             <div className="flex items-center justify-between text-xs text-zinc-600 px-1">
-                 <div className="flex gap-2"><span>v1.7.0</span><span>Pro</span></div>
-                 <button onClick={() => setIsSidebarOpen(false)} className="p-1.5 hover:bg-zinc-800 rounded text-zinc-500 hover:text-zinc-300 transition-colors"><PanelLeftClose size={14} /></button>
+        <div className="p-3 border-t border-zinc-800 flex flex-col gap-2">
+             <Button variant="ghost" onClick={() => setIsTokenManagerOpen(true)} className="w-full justify-start text-xs h-8 gap-2 text-zinc-500">
+                <Key size={14} /><span>Token 管理</span>
+             </Button>
+             <div className="flex items-center justify-between text-xs text-zinc-600 px-1 pt-2 border-t border-zinc-800/50">
+                 <div className="flex gap-2"><span>v1.9.0</span><span>Pro</span></div>
              </div>
         </div>
         <div onMouseDown={startResizing} className="absolute right-0 top-0 w-1 h-full cursor-col-resize hover:bg-indigo-500/50 transition-colors z-50 opacity-0 group-hover/sidebar:opacity-100" />
@@ -595,7 +932,7 @@ const App: React.FC = () => {
             <main className="flex-1 overflow-y-auto p-6 space-y-6">
               {activeProject.data.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center pb-20">
-                   {/* ... Empty State ... */}
+                   {/* Empty State */}
                    {activeProject.metaConfig ? (
                        <div className="text-center space-y-4">
                             <div className="w-16 h-16 bg-[#1877F2]/10 rounded-2xl flex items-center justify-center mx-auto border border-[#1877F2]/20"><Facebook size={32} className="text-[#1877F2]" /></div>
@@ -612,10 +949,9 @@ const App: React.FC = () => {
                 </div>
               ) : (
                 <>
-                  {/* Analysis Result (Same) */}
+                  {/* Analysis Result */}
                   {analysisResult && (
                     <Card className="p-5 border-indigo-500/20 bg-indigo-900/10 animate-in fade-in slide-in-from-top-2">
-                      {/* ... Content ... */}
                       <div className="flex items-start gap-4">
                         <div className="p-2 bg-indigo-500/20 rounded-md shrink-0"><Sparkles className="text-indigo-400" size={18} /></div>
                         <div className="space-y-1 flex-1">
@@ -627,62 +963,81 @@ const App: React.FC = () => {
                     </Card>
                   )}
 
-                  {/* Toolbar */}
-                  <div className="flex flex-col xl:flex-row justify-between items-start xl:items-end gap-4 sticky top-0 bg-[#09090b] py-2 z-10 border-b border-zinc-800/0">
-                    <div className="flex items-center gap-4 w-full xl:w-auto overflow-x-auto no-scrollbar pb-2 xl:pb-0">
-                        {/* Tabs */}
-                        <div className="flex p-1 bg-zinc-900 rounded-lg border border-zinc-800 shrink-0">
-                          {(['all', 'campaign', 'adset', 'creative'] as const).map((tab) => (
-                            <button
-                              key={tab}
-                              onClick={() => { setActiveTab(tab); setSearchQuery(""); }}
-                              className={cn(
-                                "px-3 py-1.5 text-xs font-medium rounded-md transition-all whitespace-nowrap",
-                                activeTab === tab ? "bg-zinc-800 text-white shadow-sm" : "text-zinc-500 hover:text-zinc-300"
-                              )}
-                            >
-                              {getTabLabel(tab)}
-                            </button>
-                          ))}
-                        </div>
-
-                         {/* Search */}
-                        <div className="relative group shrink-0 w-48 xl:w-64">
-                            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500 group-focus-within:text-indigo-400 transition-colors" size={14} />
-                            <input type="text" placeholder="搜尋名稱..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600 focus:ring-1 focus:ring-zinc-600 transition-all" />
-                             {searchQuery && <button onClick={() => setSearchQuery("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-zinc-400"><X size={12} /></button>}
-                        </div>
-
-                        {/* Meta Controls */}
-                        {activeProject.metaConfig ? (
-                             <div className="flex items-center gap-2 px-3 py-1.5 bg-zinc-900 border border-zinc-800 rounded-lg shrink-0">
-                                <Calendar size={14} className="text-zinc-500"/>
-                                <input type="date" value={dateRange.start} onChange={(e) => setDateRange({...dateRange, start: e.target.value})} className="bg-transparent text-xs text-zinc-300 focus:outline-none w-24" />
-                                <span className="text-zinc-600">-</span>
-                                <input type="date" value={dateRange.end} onChange={(e) => setDateRange({...dateRange, end: e.target.value})} className="bg-transparent text-xs text-zinc-300 focus:outline-none w-24" />
-                                <div className="w-px h-4 bg-zinc-700 mx-2"/>
-                                <button onClick={handleSyncMeta} disabled={loading} className="text-xs text-[#1877F2] hover:text-white font-medium flex items-center gap-1 disabled:opacity-50">
-                                    {loading ? <RefreshCw size={14} className="animate-spin"/> : <RefreshCw size={14}/>} 同步
+                  {/* Toolbar - Redesigned to avoid overflow clipping for dropdowns */}
+                  <div className="sticky top-0 bg-[#09090b] py-2 z-20 border-b border-zinc-800/0">
+                    <div className="flex flex-col xl:flex-row gap-4 items-start xl:items-center justify-between">
+                        
+                        {/* Tabs - Scrollable Area */}
+                        <div className="w-full xl:w-auto overflow-x-auto no-scrollbar pb-1 xl:pb-0">
+                            <div className="flex p-1 bg-zinc-900 rounded-lg border border-zinc-800 shrink-0">
+                              {(['campaign', 'adset', 'creative', 'age', 'gender', 'yangyu'] as const).map((tab) => (
+                                <button
+                                  key={tab}
+                                  onClick={() => { setActiveTab(tab); setSearchQuery(""); }}
+                                  className={cn(
+                                    "px-3 py-1.5 text-xs font-medium rounded-md transition-all whitespace-nowrap",
+                                    activeTab === tab ? "bg-zinc-800 text-white shadow-sm" : "text-zinc-500 hover:text-zinc-300"
+                                  )}
+                                >
+                                  {getTabLabel(tab)}
                                 </button>
-                             </div>
-                        ) : (
-                            <div className="h-8 shrink-0"><button onClick={() => setIsUploadModalOpen(true)} className="h-full px-3 flex items-center gap-2 bg-zinc-900 border border-dashed border-zinc-700 hover:border-zinc-500 rounded-md cursor-pointer text-xs text-zinc-400 hover:text-zinc-200 transition-colors"><Plus size={14} /><span>新增檔案</span></button></div>
-                        )}
-                    </div>
-                    {/* Presets */}
-                    <div className="flex items-center gap-2 overflow-x-auto max-w-full pb-1 no-scrollbar shrink-0">
-                      <span className="text-[10px] font-semibold text-zinc-600 uppercase tracking-wider mr-1 shrink-0">VIEW</span>
-                      {[...DEFAULT_PRESETS, ...customPresets].map(preset => (
-                        <button key={preset.id} onClick={() => applyPreset(preset.id)} className={cn("px-3 py-1 text-xs rounded-full border transition-colors whitespace-nowrap", activePresetId === preset.id ? "bg-indigo-500/10 border-indigo-500/50 text-indigo-400" : "border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:bg-zinc-800")}>{preset.name}</button>
-                      ))}
-                      <button onClick={() => setIsColumnModalOpen(!isColumnModalOpen)} className="p-1 rounded-full border border-dashed border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-500 ml-2"><Settings size={14} /></button>
+                              ))}
+                            </div>
+                        </div>
+
+                        {/* Controls - Fixed Area (No Overflow) */}
+                        <div className="flex items-center gap-3 flex-wrap w-full xl:w-auto">
+                            {/* Status Filter */}
+                            <div className="relative group shrink-0">
+                                <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-lg px-2 h-9">
+                                    <Filter size={14} className="text-zinc-500" />
+                                    <select 
+                                        className="bg-transparent text-xs text-zinc-300 focus:outline-none appearance-none pr-4 cursor-pointer"
+                                        value={statusFilter}
+                                        onChange={(e) => setStatusFilter(e.target.value as any)}
+                                    >
+                                        <option value="all">所有廣告</option>
+                                        <option value="active">刊登中的廣告 (Active)</option>
+                                        <option value="delivered">已投遞 (有曝光)</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                             {/* Search */}
+                            <div className="relative group shrink-0 w-48">
+                                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500 group-focus-within:text-indigo-400 transition-colors" size={14} />
+                                <input type="text" placeholder="搜尋名稱..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600 focus:ring-1 focus:ring-zinc-600 transition-all" />
+                                 {searchQuery && <button onClick={() => setSearchQuery("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-600 hover:text-zinc-400"><X size={12} /></button>}
+                            </div>
+
+                            {/* Meta Controls */}
+                            {activeProject.metaConfig ? (
+                                 <div className="flex items-center gap-2 shrink-0 relative z-30">
+                                    <DateRangePicker value={dateRange} onChange={setDateRange} />
+                                    <button onClick={handleSyncMeta} disabled={loading} className="h-9 px-3 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 rounded-lg text-xs text-[#1877F2] hover:text-white font-medium flex items-center gap-1 disabled:opacity-50 transition-colors">
+                                        {loading ? <RefreshCw size={14} className="animate-spin"/> : <RefreshCw size={14}/>} 同步
+                                    </button>
+                                 </div>
+                            ) : (
+                                <div className="h-8 shrink-0"><button onClick={() => setIsUploadModalOpen(true)} className="h-full px-3 flex items-center gap-2 bg-zinc-900 border border-dashed border-zinc-700 hover:border-zinc-500 rounded-md cursor-pointer text-xs text-zinc-400 hover:text-zinc-200 transition-colors"><Plus size={14} /><span>新增檔案</span></button></div>
+                            )}
+                            
+                            {(activeTab !== 'age' && activeTab !== 'gender') && (
+                                <button 
+                                onClick={() => setIsColumnModalOpen(!isColumnModalOpen)} 
+                                className="h-8 w-8 flex items-center justify-center rounded-lg border border-dashed border-zinc-700 text-zinc-500 hover:text-zinc-300 hover:border-zinc-500 transition-colors"
+                                title="欄位設定"
+                                >
+                                <Settings size={14} />
+                                </button>
+                            )}
+                        </div>
                     </div>
                   </div>
 
-                  {/* Column Config Modal (Same) */}
-                  {isColumnModalOpen && (
+                  {/* Column Config */}
+                  {isColumnModalOpen && activeTab !== 'age' && activeTab !== 'gender' && (
                     <Card className="p-4 animate-in fade-in slide-in-from-top-2 duration-200 mb-4">
-                      {/* ... */}
                       <div className="flex items-center justify-between mb-4">
                         <h3 className="text-sm font-medium">自訂欄位顯示</h3>
                         <div className="flex gap-2"><Button size="sm" variant="ghost" className="text-xs h-7" onClick={() => { const name = prompt("請輸入此檢視模式的名稱:"); if (name) saveCurrentAsPreset(name); }}>儲存組合</Button><button onClick={() => setIsColumnModalOpen(false)} className="text-zinc-500 hover:text-zinc-300"><X size={16}/></button></div>
@@ -697,80 +1052,136 @@ const App: React.FC = () => {
                     </Card>
                   )}
 
-                  {/* Table */}
+                  {/* Table Area */}
                   <div className="rounded-xl border border-zinc-800 overflow-hidden bg-zinc-900/30">
                     <div className="overflow-x-auto">
-                      <table className="w-full text-left text-sm whitespace-nowrap border-collapse">
-                        <thead>
-                          <tr className="border-b border-zinc-800 bg-zinc-900/80">
-                            {visibleColumns.map(colId => {
-                              const def = AVAILABLE_COLUMNS.find(c => c.id === colId);
-                              return <th key={colId} className="px-4 py-3 font-medium text-zinc-500 text-xs uppercase tracking-wider">{def?.label}</th>;
-                            })}
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-zinc-800/50">
-                          {filteredData.slice(0, 200).map((row, index) => {
-                             // --- MERGE LOGIC ---
-                             // Check if campaignName matches previous row
-                             const isSameCampaign = index > 0 && row.campaignName === filteredData[index - 1].campaignName;
-                             
-                             return (
-                                <tr key={row.id} className="hover:bg-zinc-800/30 transition-colors group">
-                                {visibleColumns.map(colId => {
-                                    const def = AVAILABLE_COLUMNS.find(c => c.id === colId);
-                                    const val = row[colId];
-                                    
-                                    // Special Case: Campaign Name Column
-                                    if (colId === 'campaignName') {
-                                        return (
-                                            <td key={colId} className="px-4 py-2.5 max-w-[200px] truncate text-zinc-300 font-medium">
-                                                {/* Only show if not same as previous, or if it's the first row */}
-                                                {!isSameCampaign && <span title={val} className="text-indigo-300">{val}</span>}
-                                            </td>
-                                        );
-                                    }
-
-                                    // Image
-                                    if (colId === 'imageUrl') {
-                                        return (
-                                            <td key={colId} className="px-4 py-2.5">
-                                                {val ? (
-                                                    <div className="w-10 h-10 rounded overflow-hidden bg-zinc-800 cursor-zoom-in border border-zinc-700 hover:border-indigo-500/50 transition-colors" onClick={() => setPreviewImage(val)}>
-                                                        <img src={val} alt="Ad Preview" className="w-full h-full object-cover" />
-                                                    </div>
-                                                ) : (
-                                                    // Placeholder icon
-                                                    <div className="w-10 h-10 rounded bg-zinc-800/50 flex items-center justify-center text-zinc-600"><ImageIcon size={14} /></div>
-                                                )}
-                                            </td>
-                                        )
-                                    }
-
-                                    if (colId === 'platform') {
-                                        return <td key={colId} className="px-4 py-2.5">{val === 'meta' ? <div className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-blue-500" /><span className="text-zinc-300 text-xs">Meta</span></div> : <div className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-orange-500" /><span className="text-zinc-300 text-xs">Google</span></div>}</td>;
-                                    }
-                                    if (colId === 'status') {
-                                        return <td key={colId} className="px-4 py-2.5"><Badge variant="outline" className={cn("border-0 px-1.5 py-0.5 rounded text-[10px]", (val === 'Active' || val === 'enabled' || val === 'active') ? "bg-emerald-500/10 text-emerald-400" : "bg-zinc-800 text-zinc-500")}>{val}</Badge></td>;
-                                    }
-                                    if (colId === 'name') {
-                                        return <td key={colId} className="px-4 py-2.5 max-w-[300px] truncate text-zinc-300 group-hover:text-zinc-100 font-medium" title={val}>{val}</td>;
-                                    }
-
-                                    return (
-                                    <td key={colId} className={cn("px-4 py-2.5 text-zinc-400 tabular-nums", def?.type === 'currency' && "text-zinc-300", (colId === 'roas' && row.roas > 3) && "text-emerald-400 font-medium")}>
-                                        {formatVal(val, def?.type || 'text')}
-                                    </td>
-                                    );
-                                })}
+                      {demographicData ? (
+                        // --- AGGREGATED DEMOGRAPHICS TABLE ---
+                        <table className="w-full text-left text-sm whitespace-nowrap border-collapse">
+                            <thead>
+                                <tr className="border-b border-zinc-800 bg-zinc-900/80">
+                                    <th className="px-4 py-3 font-medium text-zinc-500 text-xs uppercase tracking-wider">{activeTab === 'age' ? '年齡' : '性別'}</th>
+                                    {DEMO_TABLE_COLS.map(col => (
+                                        <th key={col.id} className="px-4 py-3 font-medium text-zinc-500 text-xs uppercase tracking-wider">{col.label}</th>
+                                    ))}
                                 </tr>
-                             );
-                          })}
-                        </tbody>
-                      </table>
+                            </thead>
+                            <tbody className="divide-y divide-zinc-800/50">
+                                {/* Total Row */}
+                                <tr className="bg-amber-900/30 text-amber-100 font-semibold border-b border-zinc-800">
+                                    <td className="px-4 py-3">{demographicData.total.name}</td>
+                                    {DEMO_TABLE_COLS.map(col => (
+                                        <td key={col.id} className="px-4 py-3 tabular-nums">
+                                            {formatVal(demographicData.total[col.id], col.type)}
+                                        </td>
+                                    ))}
+                                </tr>
+                                {/* Data Rows */}
+                                {demographicData.rows.map(row => (
+                                    <tr key={row.name} className="hover:bg-zinc-800/30 transition-colors">
+                                        <td className="px-4 py-2.5 font-medium text-zinc-300">{row.name}</td>
+                                        {DEMO_TABLE_COLS.map(col => (
+                                            <td key={col.id} className={cn("px-4 py-2.5 text-zinc-400 tabular-nums", col.type === 'currency' && "text-zinc-300")}>
+                                                {formatVal(row[col.id], col.type)}
+                                            </td>
+                                        ))}
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                      ) : (
+                        // --- STANDARD TABLE ---
+                        <table className="w-full text-left text-sm whitespace-nowrap border-collapse">
+                            <thead>
+                            <tr className="border-b border-zinc-800 bg-zinc-900/80">
+                                {visibleColumns.map(colId => {
+                                const def = AVAILABLE_COLUMNS.find(c => c.id === colId);
+                                const isSorted = sortConfig?.key === colId;
+                                
+                                return (
+                                    <th 
+                                        key={colId} 
+                                        onClick={() => requestSort(colId)}
+                                        className="px-4 py-3 font-medium text-zinc-500 text-xs uppercase tracking-wider cursor-pointer hover:text-zinc-300 transition-colors select-none group"
+                                    >
+                                    <div className="flex items-center gap-1">
+                                        {def?.label}
+                                        <span className="text-zinc-600 group-hover:text-zinc-500">
+                                            {isSorted ? (
+                                                sortConfig.direction === 'asc' ? <ChevronUp size={12}/> : <ChevronDown size={12}/>
+                                            ) : (
+                                                <ArrowUpDown size={12} className="opacity-0 group-hover:opacity-100 transition-opacity" />
+                                            )}
+                                        </span>
+                                    </div>
+                                    </th>
+                                );
+                                })}
+                            </tr>
+                            </thead>
+                            <tbody className="divide-y divide-zinc-800/50">
+                            {filteredData.slice(0, 200).map((row, index) => {
+                                // --- MERGE LOGIC ---
+                                const isDefaultSort = !sortConfig;
+                                const isSameCampaign = isDefaultSort && index > 0 && row.campaignName === filteredData[index - 1].campaignName;
+                                
+                                return (
+                                    <tr key={row.id} className="hover:bg-zinc-800/30 transition-colors group">
+                                    {visibleColumns.map(colId => {
+                                        const def = AVAILABLE_COLUMNS.find(c => c.id === colId);
+                                        const val = row[colId];
+                                        
+                                        if (colId === 'campaignName') {
+                                            return (
+                                                <td key={colId} className="px-4 py-2.5 max-w-[200px] truncate text-zinc-300 font-medium">
+                                                    {!isSameCampaign && <span title={val} className="text-indigo-300">{val}</span>}
+                                                </td>
+                                            );
+                                        }
+
+                                        if (colId === 'imageUrl') {
+                                            return (
+                                                <td key={colId} className="px-4 py-2.5">
+                                                    {val ? (
+                                                        <div className="w-10 h-10 rounded overflow-hidden bg-zinc-800 cursor-zoom-in border border-zinc-700 hover:border-indigo-500/50 transition-colors" onClick={() => setPreviewImage(val)}>
+                                                            <img src={val} alt="Ad Preview" className="w-full h-full object-cover" />
+                                                        </div>
+                                                    ) : (
+                                                        <div className="w-10 h-10 rounded bg-zinc-800/50 flex items-center justify-center text-zinc-600"><ImageIcon size={14} /></div>
+                                                    )}
+                                                </td>
+                                            )
+                                        }
+
+                                        if (colId === 'platform') {
+                                            return <td key={colId} className="px-4 py-2.5">{val === 'meta' ? <div className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-blue-500" /><span className="text-zinc-300 text-xs">Meta</span></div> : <div className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-orange-500" /><span className="text-zinc-300 text-xs">Google</span></div>}</td>;
+                                        }
+                                        if (colId === 'status') {
+                                            return <td key={colId} className="px-4 py-2.5"><Badge variant="outline" className={cn("border-0 px-1.5 py-0.5 rounded text-[10px]", (val === 'Active' || val === 'enabled' || val === 'active') ? "bg-emerald-500/10 text-emerald-400" : "bg-zinc-800 text-zinc-500")}>{val}</Badge></td>;
+                                        }
+                                        if (colId === 'name') {
+                                            return <td key={colId} className="px-4 py-2.5 max-w-[300px] truncate text-zinc-300 group-hover:text-zinc-100 font-medium" title={val}>{val}</td>;
+                                        }
+
+                                        return (
+                                        <td key={colId} className={cn("px-4 py-2.5 text-zinc-400 tabular-nums", def?.type === 'currency' && "text-zinc-300", (colId === 'roas' && row.roas > 3) && "text-emerald-400 font-medium")}>
+                                            {formatVal(val, def?.type || 'text')}
+                                        </td>
+                                        );
+                                    })}
+                                    </tr>
+                                );
+                            })}
+                            </tbody>
+                        </table>
+                      )}
                     </div>
                     <div className="px-4 py-2 border-t border-zinc-800 bg-zinc-900/50 text-[10px] text-zinc-600 flex justify-between">
-                      <span>顯示 {Math.min(filteredData.length, 200)} / {filteredData.length} 筆資料 (僅顯示前200筆)</span>
+                      {demographicData ? (
+                           <span>顯示 {demographicData.rows.length} 筆加總資料</span>
+                      ) : (
+                           <span>顯示 {Math.min(filteredData.length, 200)} / {filteredData.length} 筆資料 (僅顯示前200筆)</span>
+                      )}
                       {activeProject.data.length > 0 && <span className="opacity-70">資料來源: {activeProject.name}</span>}
                     </div>
                   </div>
