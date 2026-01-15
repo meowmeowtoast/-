@@ -60,6 +60,7 @@ export interface AdRow {
 export interface MetaConfig {
   accountId: string;
   accountName: string;
+  currency: string; // Added Currency
   token: string;
 }
 
@@ -90,4 +91,14 @@ export interface Preset {
   id: string;
   name: string;
   columns: string[];
+}
+
+export interface ExportOptions {
+  filename: string;
+  includeCurrentView: boolean; // Export filtered data with visible columns
+  includeRawCampaigns: boolean;
+  includeRawAdSets: boolean;
+  includeRawAds: boolean;
+  visibleColumns: string[]; // IDs of columns visible in UI
+  columnDefs: ColumnDef[]; // Definitions to get labels
 }

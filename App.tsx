@@ -4,7 +4,7 @@ import {
   Upload, Download, Settings, RefreshCw, Layers, Plus, Trash2, Sparkles, 
   Folder, FileText, MoreHorizontal, Edit2, Search, X, ChevronRight, GripVertical, Filter,
   PanelLeftClose, HelpCircle, FileQuestion, ImageIcon, ExternalLink, Facebook, Calendar, Link,
-  Users, Key, ArrowUpDown, ChevronUp, ChevronDown, AlertTriangle
+  Users, Key, ArrowUpDown, ChevronUp, ChevronDown, AlertTriangle, FileSpreadsheet
 } from 'lucide-react';
 import { parseCSV, exportToExcel } from './services/dataService';
 import { generateInsights } from './services/geminiService';
@@ -239,7 +239,16 @@ const App: React.FC = () => {
   const [isMetaModalOpen, setIsMetaModalOpen] = useState(false);
   const [isTokenManagerOpen, setIsTokenManagerOpen] = useState(false);
   const [showExportHelp, setShowExportHelp] = useState(false);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
+
+  // Export Options
+  const [exportOptions, setExportOptions] = useState({
+    includeCurrentView: true,
+    includeRawCampaigns: true,
+    includeRawAdSets: false,
+    includeRawAds: false
+  });
   
   // Meta API State
   const [metaToken, setMetaToken] = useState("");
@@ -422,7 +431,7 @@ const App: React.FC = () => {
     if (statusFilter === 'active') {
         data = data.filter(row => {
             const s = row.status.toLowerCase();
-            return s === 'active' || s === 'enabled' || s === 'in_process' || s === 'with_issues';
+            return s === 'active' || s === 'enabled' || s === 'in_process' || s === 'with_issues' || s === '進行中' || s === '審查中' || s === '預審通過';
         });
     } else if (statusFilter === 'delivered') {
         // "Delivered" usually implies impressions > 0
@@ -600,12 +609,23 @@ const App: React.FC = () => {
 
       setLoading(true);
       try {
-          const rows = await fetchMetaAdsData(tokenToUse, selectedMetaAccount, dateRange.start, dateRange.end);
+          const rows = await fetchMetaAdsData(
+              tokenToUse, 
+              selectedMetaAccount, 
+              dateRange.start, 
+              dateRange.end, 
+              account.currency || 'USD' // Pass currency
+          );
           const newProject: Project = {
               id: crypto.randomUUID(),
               name: `Meta: ${account.name}`,
               data: rows,
-              metaConfig: { accountId: account.account_id, accountName: account.name, token: tokenToUse },
+              metaConfig: { 
+                  accountId: account.account_id, 
+                  accountName: account.name, 
+                  token: tokenToUse,
+                  currency: account.currency || 'USD' // Store currency
+              },
               createdAt: Date.now(),
               updatedAt: Date.now()
           };
@@ -625,26 +645,35 @@ const App: React.FC = () => {
       }
   };
 
-  const handleSyncMeta = async () => {
+  const handleSyncMeta = async (force: boolean = false) => {
       if (!activeProject?.metaConfig) return;
+
+      if (!force) {
+          const timeSinceUpdate = Date.now() - activeProject.updatedAt;
+          const fiveMinutes = 5 * 60 * 1000;
+          if (timeSinceUpdate < fiveMinutes) {
+             const confirmSync = window.confirm("距離上次同步不到 5 分鐘。頻繁同步可能導致 API 限制。確定要強制同步嗎？");
+             if (!confirmSync) return;
+          }
+      }
+
       setLoading(true);
       try {
-          // Use current dateRange from state, not from the project config
           const rows = await fetchMetaAdsData(
               activeProject.metaConfig.token, 
               activeProject.metaConfig.accountId, 
               dateRange.start, 
-              dateRange.end
+              dateRange.end,
+              activeProject.metaConfig.currency || 'USD'
           );
           setProjects(prev => prev.map(p => {
-             // Force update the data array to trigger re-renders
              if (p.id === activeProject.id) return { ...p, data: [...rows], updatedAt: Date.now() };
              return p;
           }));
           addToast("數據已更新至最新", 'success');
       } catch (e: any) {
           const errorMsg = e.message || "";
-          if (errorMsg.includes("Session has expired")) {
+          if (errorMsg.includes("Access Token")) {
               addToast("同步失敗：您的 Token 已過期，請更新 Token。", 'error');
           } else {
               addToast(`更新失敗: ${errorMsg}`, 'error');
@@ -654,10 +683,26 @@ const App: React.FC = () => {
       }
   };
 
-  const handleExport = () => {
+  const handleExportClick = () => {
+      if (activeProject) {
+          setIsExportModalOpen(true);
+      }
+  };
+
+  const handleExportConfirm = () => {
     if (activeProject) {
-      exportToExcel(activeProject.data, activeProject.name);
+      const optionsWithData = {
+          filename: activeProject.name,
+          ...exportOptions,
+          visibleColumns,
+          columnDefs: AVAILABLE_COLUMNS,
+          currentViewData: filteredData
+      };
+      
+      exportToExcel(activeProject.data, optionsWithData as any);
+      
       addToast("報表下載中...", 'info');
+      setIsExportModalOpen(false);
     }
   };
 
@@ -698,8 +743,8 @@ const App: React.FC = () => {
     addToast(`檢視模式「${name}」已儲存`, 'success');
   };
 
-  const formatVal = (val: any, type: ColumnDef['type']) => {
-    if (type === 'currency') return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val);
+  const formatVal = (val: any, type: ColumnDef['type'], currencyCode: string = 'USD') => {
+    if (type === 'currency') return new Intl.NumberFormat('en-US', { style: 'currency', currency: currencyCode }).format(val);
     if (type === 'percent') return `${val.toFixed(2)}%`;
     if (type === 'number') return val.toLocaleString();
     return val;
@@ -718,6 +763,34 @@ const App: React.FC = () => {
         case 'demographics': return '客層表現';
         default: return tab;
     }
+  };
+
+  // Helper function to calculate sticky offsets dynamically
+  // We want to sticky: Campaign Name, Image (if visible), and Name.
+  // We need to know the width of preceding sticky columns.
+  const getStickyStyle = (colId: string, isHeader: boolean = false) => {
+      const stickyCols = ['campaignName', 'imageUrl', 'name'];
+      if (!stickyCols.includes(colId)) return {};
+
+      let left = 0;
+      // Fixed widths based on AVAILABLE_COLUMNS definition in App.tsx
+      // campaignName: 200, imageUrl: 80, name: 250
+      
+      if (colId === 'campaignName') {
+          left = 0;
+      } else if (colId === 'imageUrl') {
+          if (visibleColumns.includes('campaignName')) left += 200;
+      } else if (colId === 'name') {
+          if (visibleColumns.includes('campaignName')) left += 200;
+          if (visibleColumns.includes('imageUrl')) left += 80;
+      }
+      
+      return {
+          position: 'sticky',
+          left: `${left}px`,
+          zIndex: isHeader ? 30 : 20, // Headers higher than body sticky cells
+          backgroundColor: isHeader ? '#18181b' : '#09090b', // match standard header/row bg
+      } as React.CSSProperties;
   };
 
   // Specific column config for Demographics table
@@ -739,7 +812,8 @@ const App: React.FC = () => {
     <div className="flex h-screen bg-[#09090b] text-zinc-300 font-sans overflow-hidden selection:bg-indigo-500/30">
       
       <ToastContainer toasts={toasts} removeToast={removeToast} />
-
+      
+      {/* ... (Existing Dialogs) ... */}
       <Dialog isOpen={!!previewImage} onClose={() => setPreviewImage(null)} title="素材預覽">
          <div className="flex items-center justify-center bg-zinc-950/50 rounded-lg p-2 overflow-hidden">
              {previewImage && <img src={previewImage} alt="Preview" className="max-w-full max-h-[80vh] object-contain rounded-md" />}
@@ -755,6 +829,58 @@ const App: React.FC = () => {
               <div className="flex justify-end gap-2">
                   <Button variant="ghost" onClick={() => setProjectToDelete(null)}>取消</Button>
                   <Button variant="danger" onClick={confirmDeleteProject}>確認刪除</Button>
+              </div>
+          </div>
+      </Dialog>
+
+      {/* Export Options Modal */}
+      <Dialog isOpen={isExportModalOpen} onClose={() => setIsExportModalOpen(false)} title="匯出報表設定">
+          <div className="space-y-5">
+              <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-md">
+                 <h4 className="text-sm font-medium text-indigo-200 mb-2 flex items-center gap-2">
+                    <FileSpreadsheet size={16}/> 選擇匯出分頁
+                 </h4>
+                 <p className="text-xs text-zinc-400 mb-3">勾選您希望包含在 Excel 報表中的工作表。</p>
+                 
+                 <div className="space-y-3">
+                     <label className="flex items-center gap-3 p-2 bg-zinc-900/50 rounded cursor-pointer border border-zinc-800 hover:border-zinc-700">
+                         <Checkbox 
+                            checked={exportOptions.includeCurrentView} 
+                            onChange={e => setExportOptions(prev => ({...prev, includeCurrentView: e.target.checked}))}
+                         />
+                         <div>
+                             <div className="text-sm text-zinc-200 font-medium">當前檢視 (Current View)</div>
+                             <div className="text-xs text-zinc-500">
+                                 包含目前篩選的 {filteredData.length} 筆資料，且僅顯示您勾選的 {visibleColumns.length} 個欄位。
+                             </div>
+                         </div>
+                     </label>
+
+                     <div className="border-t border-zinc-800 my-2 pt-2">
+                        <p className="text-xs text-zinc-500 mb-2 uppercase tracking-wider font-semibold">原始數據 (Raw Data)</p>
+                         <div className="grid grid-cols-1 gap-2">
+                            <label className="flex items-center gap-2 text-sm text-zinc-400 hover:text-zinc-200 cursor-pointer">
+                                <Checkbox checked={exportOptions.includeRawCampaigns} onChange={e => setExportOptions(prev => ({...prev, includeRawCampaigns: e.target.checked}))} />
+                                廣告活動 (Campaigns) - 完整數據
+                            </label>
+                            <label className="flex items-center gap-2 text-sm text-zinc-400 hover:text-zinc-200 cursor-pointer">
+                                <Checkbox checked={exportOptions.includeRawAdSets} onChange={e => setExportOptions(prev => ({...prev, includeRawAdSets: e.target.checked}))} />
+                                廣告受眾 (Ad Sets) - 完整數據
+                            </label>
+                            <label className="flex items-center gap-2 text-sm text-zinc-400 hover:text-zinc-200 cursor-pointer">
+                                <Checkbox checked={exportOptions.includeRawAds} onChange={e => setExportOptions(prev => ({...prev, includeRawAds: e.target.checked}))} />
+                                廣告/素材 (Ads) - 完整數據
+                            </label>
+                         </div>
+                     </div>
+                 </div>
+              </div>
+
+              <div className="flex justify-end gap-2">
+                  <Button variant="ghost" onClick={() => setIsExportModalOpen(false)}>取消</Button>
+                  <Button onClick={handleExportConfirm} className="bg-emerald-600 hover:bg-emerald-500 text-white">
+                      <Download size={14} className="mr-2"/> 確認匯出 Excel
+                  </Button>
               </div>
           </div>
       </Dialog>
@@ -937,7 +1063,7 @@ const App: React.FC = () => {
                       <Button onClick={handleAnalysis} variant="secondary" className="h-8 text-xs gap-2">
                         {isAnalyzing ? <RefreshCw className="animate-spin" size={14} /> : <Sparkles size={14} className="text-amber-400"/>} AI 分析
                       </Button>
-                      <Button onClick={handleExport} variant="primary" className="h-8 text-xs gap-2"><Download size={14} /> 匯出</Button>
+                      <Button onClick={handleExportClick} variant="primary" className="h-8 text-xs gap-2"><Download size={14} /> 匯出</Button>
                     </>
                   )}
                </div>
@@ -963,7 +1089,7 @@ const App: React.FC = () => {
                 </div>
               ) : (
                 <>
-                  {/* Analysis Result */}
+                  {/* ... (Analysis Result & Dialogs) ... */}
                   {analysisResult && (
                     <Card className="p-5 border-indigo-500/20 bg-indigo-900/10 animate-in fade-in slide-in-from-top-2">
                       <div className="flex items-start gap-4">
@@ -976,8 +1102,7 @@ const App: React.FC = () => {
                       </div>
                     </Card>
                   )}
-
-                  {/* Toolbar - Redesigned to avoid overflow clipping for dropdowns */}
+                  {/* ... (Existing Toolbar) ... */}
                   <div className="sticky top-0 bg-[#09090b] py-2 z-20 border-b border-zinc-800/0">
                     <div className="flex flex-col xl:flex-row gap-4 items-start xl:items-center justify-between">
                         
@@ -1011,7 +1136,7 @@ const App: React.FC = () => {
                                         onChange={(e) => setStatusFilter(e.target.value as any)}
                                     >
                                         <option value="all">所有廣告</option>
-                                        <option value="active">刊登中的廣告 (Active)</option>
+                                        <option value="active">刊登中的廣告</option>
                                         <option value="delivered">已投遞 (有曝光)</option>
                                     </select>
                                 </div>
@@ -1028,7 +1153,7 @@ const App: React.FC = () => {
                             {activeProject.metaConfig ? (
                                  <div className="flex items-center gap-2 shrink-0 relative z-30">
                                     <DateRangePicker value={dateRange} onChange={setDateRange} />
-                                    <button onClick={handleSyncMeta} disabled={loading} className="h-9 px-3 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 rounded-lg text-xs text-[#1877F2] hover:text-white font-medium flex items-center gap-1 disabled:opacity-50 transition-colors">
+                                    <button onClick={() => handleSyncMeta(false)} disabled={loading} className="h-9 px-3 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 rounded-lg text-xs text-[#1877F2] hover:text-white font-medium flex items-center gap-1 disabled:opacity-50 transition-colors">
                                         {loading ? <RefreshCw size={14} className="animate-spin"/> : <RefreshCw size={14}/>} 同步
                                     </button>
                                  </div>
@@ -1049,7 +1174,7 @@ const App: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Column Config */}
+                  {/* Column Config (Existing) */}
                   {isColumnModalOpen && activeTab !== 'age' && activeTab !== 'gender' && (
                     <Card className="p-4 animate-in fade-in slide-in-from-top-2 duration-200 mb-4">
                       <div className="flex items-center justify-between mb-4">
@@ -1086,7 +1211,7 @@ const App: React.FC = () => {
                                     <td className="px-4 py-3">{demographicData.total.name}</td>
                                     {DEMO_TABLE_COLS.map(col => (
                                         <td key={col.id} className="px-4 py-3 tabular-nums">
-                                            {formatVal(demographicData.total[col.id], col.type)}
+                                            {formatVal(demographicData.total[col.id], col.type, activeProject.metaConfig?.currency)}
                                         </td>
                                     ))}
                                 </tr>
@@ -1096,7 +1221,7 @@ const App: React.FC = () => {
                                         <td className="px-4 py-2.5 font-medium text-zinc-300">{row.name}</td>
                                         {DEMO_TABLE_COLS.map(col => (
                                             <td key={col.id} className={cn("px-4 py-2.5 text-zinc-400 tabular-nums", col.type === 'currency' && "text-zinc-300")}>
-                                                {formatVal(row[col.id], col.type)}
+                                                {formatVal(row[col.id], col.type, activeProject.metaConfig?.currency)}
                                             </td>
                                         ))}
                                     </tr>
@@ -1111,12 +1236,17 @@ const App: React.FC = () => {
                                 {visibleColumns.map(colId => {
                                 const def = AVAILABLE_COLUMNS.find(c => c.id === colId);
                                 const isSorted = sortConfig?.key === colId;
+                                const stickyStyle = getStickyStyle(colId, true);
                                 
                                 return (
                                     <th 
                                         key={colId} 
                                         onClick={() => requestSort(colId)}
-                                        className="px-4 py-3 font-medium text-zinc-500 text-xs uppercase tracking-wider cursor-pointer hover:text-zinc-300 transition-colors select-none group"
+                                        style={stickyStyle}
+                                        className={cn(
+                                          "px-4 py-3 font-medium text-zinc-500 text-xs uppercase tracking-wider cursor-pointer hover:text-zinc-300 transition-colors select-none group",
+                                          stickyStyle.position === 'sticky' && "shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)] border-r border-zinc-800 z-20"
+                                        )}
                                     >
                                     <div className="flex items-center gap-1">
                                         {def?.label}
@@ -1145,10 +1275,11 @@ const App: React.FC = () => {
                                     {visibleColumns.map(colId => {
                                         const def = AVAILABLE_COLUMNS.find(c => c.id === colId);
                                         const val = row[colId];
+                                        const stickyStyle = getStickyStyle(colId, false);
                                         
                                         if (colId === 'campaignName') {
                                             return (
-                                                <td key={colId} className="px-4 py-2.5 max-w-[200px] truncate text-zinc-300 font-medium">
+                                                <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5 max-w-[200px] truncate text-zinc-300 font-medium", stickyStyle.position === 'sticky' && "shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)] border-r border-zinc-800 group-hover:bg-[#18181b]")}>
                                                     {!isSameCampaign && <span title={val} className="text-indigo-300">{val}</span>}
                                                 </td>
                                             );
@@ -1156,7 +1287,7 @@ const App: React.FC = () => {
 
                                         if (colId === 'imageUrl') {
                                             return (
-                                                <td key={colId} className="px-4 py-2.5">
+                                                <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5", stickyStyle.position === 'sticky' && "shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)] border-r border-zinc-800 group-hover:bg-[#18181b]")}>
                                                     {val ? (
                                                         <div className="w-10 h-10 rounded overflow-hidden bg-zinc-800 cursor-zoom-in border border-zinc-700 hover:border-indigo-500/50 transition-colors" onClick={() => setPreviewImage(val)}>
                                                             <img src={val} alt="Ad Preview" className="w-full h-full object-cover" />
@@ -1169,24 +1300,28 @@ const App: React.FC = () => {
                                         }
 
                                         if (colId === 'platform') {
-                                            return <td key={colId} className="px-4 py-2.5">{val === 'meta' ? <div className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-blue-500" /><span className="text-zinc-300 text-xs">Meta</span></div> : <div className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-orange-500" /><span className="text-zinc-300 text-xs">Google</span></div>}</td>;
+                                            return <td key={colId} style={stickyStyle} className="px-4 py-2.5">{val === 'meta' ? <div className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-blue-500" /><span className="text-zinc-300 text-xs">Meta</span></div> : <div className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-orange-500" /><span className="text-zinc-300 text-xs">Google</span></div>}</td>;
                                         }
                                         if (colId === 'status') {
-                                            return <td key={colId} className="px-4 py-2.5"><Badge variant="outline" className={cn("border-0 px-1.5 py-0.5 rounded text-[10px]", (val === 'Active' || val === 'enabled' || val === 'active') ? "bg-emerald-500/10 text-emerald-400" : "bg-zinc-800 text-zinc-500")}>{val}</Badge></td>;
+                                            return <td key={colId} style={stickyStyle} className="px-4 py-2.5"><Badge variant="outline" className={cn("border-0 px-1.5 py-0.5 rounded text-[10px]", (val === 'Active' || val === 'enabled' || val === 'active' || val === '進行中' || val === '審查中') ? "bg-emerald-500/10 text-emerald-400" : "bg-zinc-800 text-zinc-500")}>{val}</Badge></td>;
                                         }
                                         if (colId === 'name') {
-                                            return <td key={colId} className="px-4 py-2.5 max-w-[300px] truncate text-zinc-300 group-hover:text-zinc-100 font-medium" title={val}>{val}</td>;
+                                            return <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5 max-w-[300px] truncate text-zinc-300 group-hover:text-zinc-100 font-medium", stickyStyle.position === 'sticky' && "shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)] border-r border-zinc-800 group-hover:bg-[#18181b]")} title={val}>{val}</td>;
                                         }
                                         
                                         if (colId === 'budget') {
-                                             return <td key={colId} className="px-4 py-2.5 text-zinc-400 tabular-nums">
-                                                 {val ? `${formatVal(val, 'currency')}${row.budgetType === 'Daily' ? '/日' : '/總'}` : '-'}
+                                             return <td key={colId} style={stickyStyle} className="px-4 py-2.5 text-zinc-400 tabular-nums">
+                                                 {(val === 0 && row.budgetType === 'ABO') ? (
+                                                     <span className="text-xs text-zinc-500">使用廣告組合預算</span>
+                                                 ) : (
+                                                     val ? `${formatVal(val, 'currency', activeProject.metaConfig?.currency)}${row.budgetType === 'Daily' ? '/日' : '/總'}` : '-'
+                                                 )}
                                              </td>
                                         }
 
                                         return (
                                         <td key={colId} className={cn("px-4 py-2.5 text-zinc-400 tabular-nums", def?.type === 'currency' && "text-zinc-300", (colId === 'roas' && row.roas > 3) && "text-emerald-400 font-medium")}>
-                                            {formatVal(val, def?.type || 'text')}
+                                            {formatVal(val, def?.type || 'text', activeProject.metaConfig?.currency)}
                                         </td>
                                         );
                                     })}

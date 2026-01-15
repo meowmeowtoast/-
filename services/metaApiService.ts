@@ -11,12 +11,49 @@ interface MetaAccount {
   currency: string;
 }
 
+// --- Helper: Robust Fetch with Retry ---
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+const fetchWithRetry = async (url: string, retries = 3, backoff = 1000): Promise<any> => {
+    for (let i = 0; i < retries; i++) {
+        try {
+            const res = await fetch(url);
+            const data = await res.json();
+            
+            // Handle API Errors returned as JSON
+            if (data.error) {
+                // Rate Limit Code: 17, 4, 32, 613
+                if ([17, 4, 32, 613].includes(data.error.code)) {
+                    console.warn(`Meta API Rate Limit hit. Retrying in ${backoff}ms...`);
+                    if (i < retries - 1) {
+                        await wait(backoff * (i + 1)); // Exponential backoff
+                        continue;
+                    }
+                }
+                // Token Error: 190
+                if (data.error.code === 190) {
+                    throw new Error("Access Token 已失效或過期，請重新取得 Token。");
+                }
+                throw new Error(data.error.message || "Unknown Meta API Error");
+            }
+            
+            return data;
+        } catch (err: any) {
+            // Network errors
+            if (i < retries - 1) {
+                console.warn(`Network request failed. Retrying... (${i + 1}/${retries})`);
+                await wait(backoff);
+                continue;
+            }
+            throw err;
+        }
+    }
+};
+
 // 1. Fetch Ad Accounts
 export const fetchAdAccounts = async (token: string): Promise<MetaAccount[]> => {
   const url = `${BASE_URL}/me/adaccounts?fields=name,account_id,currency&limit=100&access_token=${token}`;
-  const res = await fetch(url);
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
+  const data = await fetchWithRetry(url);
   return data.data || [];
 };
 
@@ -84,9 +121,7 @@ const getCreativeImageUrl = (creative: any): string | undefined => {
         // Link Data
         if (spec.link_data) {
             if (spec.link_data.picture) return spec.link_data.picture;
-            if (spec.link_data.image_hash) {
-                // Cannot resolve hash directly without another call, usually picture is present if public
-            }
+            // Additional check for image_hash could be here if needed
         }
         // Video Data inside story
         if (spec.video_data) {
@@ -97,12 +132,60 @@ const getCreativeImageUrl = (creative: any): string | undefined => {
     return undefined;
 };
 
+// Helper: Map English API status to Chinese UI status
+const mapStatus = (effectiveStatus: string, stopTime?: string): string => {
+    const isRunning = ['ACTIVE', 'IN_PROCESS', 'WITH_ISSUES'].includes(effectiveStatus);
+    
+    if (isRunning && stopTime) {
+        const end = new Date(stopTime).getTime();
+        const now = Date.now();
+        if (end < now) {
+            return '已完成';
+        }
+    }
+
+    // 2. Status Mapping
+    switch (effectiveStatus) {
+        case 'ACTIVE': return '進行中';
+        case 'PAUSED': return '已關閉';
+        case 'DELETED': return '已刪除';
+        case 'ARCHIVED': return '已封存';
+        case 'IN_PROCESS': return '進行中'; 
+        case 'WITH_ISSUES': return '錯誤'; 
+        case 'CAMPAIGN_PAUSED': return '行銷活動已關閉';
+        case 'ADSET_PAUSED': return '廣告組合已關閉';
+        case 'PENDING_REVIEW': return '審查中';
+        case 'DISAPPROVED': return '未通過';
+        case 'PREAPPROVED': return '預審通過';
+        case 'PENDING_BILLING_INFO': return '需更新付款資訊';
+        default: return '未投遞'; 
+    }
+};
+
+// Helper: Get Budget Divider based on Currency
+// Some currencies in Meta API are 0-decimal (like JPY) where 1 unit = 1 API unit.
+// TWD is technically 2-decimal in Meta specs (cents), BUT for this specific user case,
+// the API is returning Units (150 for 150 TWD), so we treat TWD as 0-decimal divider.
+const getBudgetDivider = (currency: string): number => {
+    const zeroDecimalCurrencies = [
+        'BIF', 'CLP', 'DJF', 'GNF', 'ISK', 'JPY', 'KMF', 'KRW', 'MGA', 
+        'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF',
+        'TWD', // Added TWD here based on user observation (150 API = 150 Budget)
+        'HUF'
+    ];
+    if (zeroDecimalCurrencies.includes(currency.toUpperCase())) {
+        return 1;
+    }
+    return 100;
+};
+
 // Helper: Generic Metrics Calculator
 const calculateMetrics = (
     item: any, 
     level: AdRow['level'], 
     effectiveStatus: string, // Raw effective_status from API
     structInfo: any, // Contains budget, endTime, etc.
+    currency: string,
     adImageMap?: Map<string, string>, 
     extraProps: Partial<AdRow> = {},
     objective?: string
@@ -141,39 +224,32 @@ const calculateMetrics = (
     const imageUrl = adImageMap && item.ad_id ? adImageMap.get(item.ad_id) : undefined;
 
     // --- Status Logic Fix ---
-    let finalStatus = effectiveStatus ? (effectiveStatus.charAt(0).toUpperCase() + effectiveStatus.slice(1).toLowerCase()) : 'Unknown';
-    const isActiveStatus = ['Active', 'In_process', 'With_issues'].includes(finalStatus);
-    
-    if (isActiveStatus && structInfo?.stopTime) {
-        const end = new Date(structInfo.stopTime).getTime();
-        const now = Date.now();
-        if (end < now) finalStatus = 'Completed';
-    }
+    const finalStatus = mapStatus(effectiveStatus, structInfo?.stopTime || structInfo?.endTime);
 
-    // --- New Yangyu Metrics ---
-    // 1. Budget (Normalized to unit currency, API returns cents usually)
+    // --- Budget Logic ---
     let budget = 0;
     let budgetType = '';
-    if (structInfo?.daily_budget) {
-        budget = parseInt(structInfo.daily_budget, 10) / 100; // Assuming currency is matched (e.g. TWD cents to TWD)
+    const divider = getBudgetDivider(currency);
+
+    if (structInfo?.daily_budget && parseInt(structInfo.daily_budget) > 0) {
+        budget = parseInt(structInfo.daily_budget, 10) / divider;
         budgetType = 'Daily';
-    } else if (structInfo?.lifetime_budget) {
-        budget = parseInt(structInfo.lifetime_budget, 10) / 100;
+    } else if (structInfo?.lifetime_budget && parseInt(structInfo.lifetime_budget) > 0) {
+        budget = parseInt(structInfo.lifetime_budget, 10) / divider;
         budgetType = 'Lifetime';
+    } else if (level === 'campaign') {
+        // ABO Detection: If Campaign Level, active, but no budget -> likely ABO
+        // We set budget to 0, but label it.
+        budgetType = 'ABO'; // Internal flag for "使用廣告組合預算"
     }
 
     // 2. Messaging
     const messagingConversationsStarted = parseFloat(actions.find((a: any) => a.action_type === 'onsite_conversion.messaging_conversation_started_7d')?.value || 0);
-    // Note: "New Messaging Connections" might be 'onsite_conversion.messaging_connection' or 'messaging_connections' depending on API version/attribution. 
-    // We check for common keys.
     const newMessagingConnections = parseFloat(actions.find((a: any) => a.action_type === 'onsite_conversion.messaging_connection' || a.action_type === 'messaging_conversation_started_7d')?.value || 0);
-    // Cost per...
     const costPerNewMessagingConnection = newMessagingConnections > 0 ? spend / newMessagingConnections : 0;
 
     // 3. Post Engagement Cost
     const postEngagement = parseFloat(actions.find((a: any) => a.action_type === 'post_engagement' || a.action_type === 'link_click' || a.action_type === 'post_reaction' || a.action_type === 'comment' || a.action_type === 'post_share')?.value || 0);
-    // Actually, 'post_engagement' aggregate action usually exists. If not, use generic engagement.
-    // For specific "Page Engagement", it's usually post_engagement.
     const costPerPageEngagement = postEngagement > 0 ? spend / postEngagement : 0;
 
     return {
@@ -208,7 +284,8 @@ export const fetchMetaAdsData = async (
   token: string, 
   accountId: string, 
   startDate: string, 
-  endDate: string
+  endDate: string,
+  currency: string // Pass currency to logic
 ): Promise<AdRow[]> => {
   const timeRange = JSON.stringify({ since: startDate, until: endDate });
   
@@ -280,25 +357,14 @@ export const fetchMetaAdsData = async (
 
   // Execute
   const [
-      campRes, setRes, adRes, 
-      campStructRes, setStructRes, adStructRes,
-      genderRes, ageRes
+      campData, setData, adData, 
+      campStruct, setStruct, adStruct,
+      genderData, ageData
   ] = await Promise.all([
-      fetch(campaignInsightsUrl), fetch(adsetInsightsUrl), fetch(adInsightsUrl),
-      fetch(campaignsUrl), fetch(adsetsUrl), fetch(adsUrl),
-      fetch(genderUrl), fetch(ageUrl)
+      fetchWithRetry(campaignInsightsUrl), fetchWithRetry(adsetInsightsUrl), fetchWithRetry(adInsightsUrl),
+      fetchWithRetry(campaignsUrl), fetchWithRetry(adsetsUrl), fetchWithRetry(adsUrl),
+      fetchWithRetry(genderUrl), fetchWithRetry(ageUrl)
   ]);
-
-  const campData = await campRes.json();
-  const setData = await setRes.json();
-  const adData = await adRes.json();
-  
-  const campStruct = await campStructRes.json();
-  const setStruct = await setStructRes.json();
-  const adStruct = await adStructRes.json();
-  
-  const genderData = await genderRes.json();
-  const ageData = await ageRes.json();
 
   if (campData.error) throw new Error(`Meta API Error: ${campData.error.message}`);
 
@@ -348,16 +414,16 @@ export const fetchMetaAdsData = async (
       const info = campaignMap.get(item.campaign_id);
       const status = info?.status || 'UNKNOWN';
       const objective = item.objective || info?.objective;
-      return calculateMetrics(item, 'campaign', status, info, undefined, undefined, objective);
+      return calculateMetrics(item, 'campaign', status, info, currency, undefined, undefined, objective);
   });
 
   // 2. AdSet Rows
   const adSetRows = (setData.data || []).map((item: any) => {
       const info = adSetMap.get(item.adset_id);
-      const campInfo = campaignMap.get(item.campaign_id); // Fallback objective
+      const campInfo = campaignMap.get(item.campaign_id); 
       const status = info?.status || 'UNKNOWN';
       const objective = item.objective || campInfo?.objective;
-      return calculateMetrics(item, 'adset', status, { stopTime: info?.endTime, ...info }, undefined, undefined, objective);
+      return calculateMetrics(item, 'adset', status, { stopTime: info?.endTime, ...info }, currency, undefined, undefined, objective);
   });
 
   // 3. Ad Rows
@@ -370,7 +436,7 @@ export const fetchMetaAdsData = async (
 
       const objective = item.objective || campInfo?.objective;
       
-      return calculateMetrics(item, 'ad', status, { stopTime: adSetInfo?.endTime }, adImageMap, undefined, objective);
+      return calculateMetrics(item, 'ad', status, { stopTime: adSetInfo?.endTime }, currency, adImageMap, undefined, objective);
   });
 
   // 4. Demographics
@@ -378,7 +444,7 @@ export const fetchMetaAdsData = async (
     const info = campaignMap.get(item.campaign_id);
     const status = info?.status || 'Active';
     const objective = item.objective || info?.objective;
-    return calculateMetrics(item, 'gender', status, undefined, undefined, { 
+    return calculateMetrics(item, 'gender', status, undefined, currency, undefined, { 
         name: item.gender === 'unknown' ? '未知' : (item.gender === 'female' ? '女性' : '男性'),
         gender: item.gender 
     }, objective);
@@ -388,7 +454,7 @@ export const fetchMetaAdsData = async (
       const info = campaignMap.get(item.campaign_id);
       const status = info?.status || 'Active';
       const objective = item.objective || info?.objective;
-      return calculateMetrics(item, 'age', status, undefined, undefined, { 
+      return calculateMetrics(item, 'age', status, undefined, currency, undefined, { 
           name: item.age,
           age: item.age 
       }, objective);

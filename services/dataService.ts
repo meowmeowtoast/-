@@ -1,7 +1,7 @@
 
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
-import { AdRow, Platform, Level } from '../types';
+import { AdRow, Platform, Level, ExportOptions } from '../types';
 
 // Helper to sanitize currency strings "$1,234.56" -> 1234.56
 const parseCurrency = (val: any): number => {
@@ -225,20 +225,57 @@ export const parseCSV = (file: File): Promise<AdRow[]> => {
   });
 };
 
-export const exportToExcel = (rows: AdRow[], filename: string = 'Ad_Report') => {
+// Updated Export Function
+export const exportToExcel = (rows: AdRow[], options: ExportOptions) => {
   const wb = XLSX.utils.book_new();
-  const wsAll = XLSX.utils.json_to_sheet(rows);
-  XLSX.utils.book_append_sheet(wb, wsAll, "總覽_Overview");
+
+  // 1. Current View (Filtered, Specific Columns)
+  if (options.includeCurrentView) {
+      // Map rows to match visible columns order and labels
+      const mappedRows = rows.map(row => {
+          const newRow: Record<string, any> = {};
+          options.visibleColumns.forEach(colId => {
+              const def = options.columnDefs.find(c => c.id === colId);
+              const label = def ? def.label : colId;
+              
+              let val = row[colId];
+              
+              // Formatting logic (optional, but good for excel)
+              if (colId === 'status' && !val) val = row.status;
+              if (colId === 'budget' && row.budgetType) val = `${val} (${row.budgetType})`;
+              
+              newRow[label] = val;
+          });
+          return newRow;
+      });
+      
+      const ws = XLSX.utils.json_to_sheet(mappedRows);
+      XLSX.utils.book_append_sheet(wb, ws, "當前檢視_Overview");
+  }
   
+  // 2. Raw Data Sheets
   const append = (lvl: Level, sheetName: string) => {
+      // For raw sheets, we might want to export the original structure or the full normalized structure.
+      // Here we export the normalized AdRow structure for consistency.
       const data = rows.filter(r => r.level === lvl);
       if (data.length) {
           const ws = XLSX.utils.json_to_sheet(data);
           XLSX.utils.book_append_sheet(wb, ws, sheetName);
       }
   };
-  append('campaign', "Campaigns");
-  append('adset', "AdSets");
-  append('ad', "Ads");
-  XLSX.writeFile(wb, `${filename}_${new Date().toISOString().split('T')[0]}.xlsx`);
+
+  // We rely on the full dataset passed to this function, but the calling function (App) 
+  // currently passes 'filteredData' to 'rows'. 
+  // If the user wants RAW data, they usually expect unfiltered data, 
+  // but for "Export Current Selection", passing filteredData is correct for the first sheet.
+  // Ideally, if we want RAW UNFILTERED data for other tabs, we'd need the full project data.
+  // NOTE: For now, we assume 'rows' contains what the user wants to export (either filtered or all).
+  // The 'App.tsx' will be responsible for passing the correct data set (e.g., activeProject.data vs filteredData).
+  // However, usually "Raw Sheets" implies comprehensive data.
+  
+  if (options.includeRawCampaigns) append('campaign', "Campaigns");
+  if (options.includeRawAdSets) append('adset', "AdSets");
+  if (options.includeRawAds) append('ad', "Ads");
+  
+  XLSX.writeFile(wb, `${options.filename}_${new Date().toISOString().split('T')[0]}.xlsx`);
 };
