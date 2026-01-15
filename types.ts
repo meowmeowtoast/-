@@ -39,6 +39,7 @@ export interface AdRow {
   cpm: number;
   frequency: number;
   costPerResult: number; // Similar to CPA but explicitly labeled
+  resultType?: string; // e.g., "網站購買", "開始訊息對話", "潛在客戶"
   
   // New Fields
   budget?: number; // 預算
@@ -60,7 +61,7 @@ export interface AdRow {
 export interface MetaConfig {
   accountId: string;
   accountName: string;
-  currency: string; // Added Currency Field
+  currency: string;
   token: string;
 }
 
@@ -75,6 +76,7 @@ export interface Project {
   id: string;
   name: string;
   data: AdRow[];
+  currency?: string; // Project level currency (e.g. TWD, USD)
   metaConfig?: MetaConfig; // Optional: If connected to Meta API
   createdAt: number;
   updatedAt: number;

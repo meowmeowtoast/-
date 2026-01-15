@@ -50,6 +50,29 @@ const fetchWithRetry = async (url: string, retries = 3, backoff = 1000): Promise
     }
 };
 
+// --- Helper: Fetch All Pages ---
+const fetchAllPages = async (initialUrl: string): Promise<any[]> => {
+    let allData: any[] = [];
+    let nextUrl = initialUrl;
+    let pageCount = 0;
+
+    while (nextUrl && pageCount < 20) { // Safety limit: 20 pages (approx 10,000 rows)
+        const response = await fetchWithRetry(nextUrl);
+        if (response.data) {
+            allData = [...allData, ...response.data];
+        }
+        
+        // Check for next page
+        if (response.paging && response.paging.next) {
+            nextUrl = response.paging.next;
+            pageCount++;
+        } else {
+            nextUrl = '';
+        }
+    }
+    return allData;
+};
+
 // 1. Fetch Ad Accounts
 export const fetchAdAccounts = async (token: string): Promise<MetaAccount[]> => {
   const url = `${BASE_URL}/me/adaccounts?fields=name,account_id,currency&limit=100&access_token=${token}`;
@@ -57,52 +80,103 @@ export const fetchAdAccounts = async (token: string): Promise<MetaAccount[]> => 
   return data.data || [];
 };
 
-// Helper: Determine the "Result" value based on objective and actions
-const getResultValue = (actions: any[], objective?: string): number => {
-    if (!actions || actions.length === 0) return 0;
+// Helper: Determine the "Result" value AND label based on objective and actions
+// Priority logic adapted to match Meta Ads Manager default columns
+const getResultData = (actions: any[], objective?: string, campaignName?: string): { value: number, label: string } => {
+    if (!actions || actions.length === 0) return { value: 0, label: '成果' };
 
     const findVal = (type: string) => {
         const item = actions.find((a: any) => a.action_type === type);
         return item ? parseFloat(item.value) : 0;
     };
 
-    // 1. Hard Conversions (Sales/Leads)
-    const purchase = findVal('purchase') || findVal('omni_purchase') || findVal('offsite_conversion.fb_pixel_purchase');
-    if (purchase > 0) return purchase;
+    // --- Heuristic Override: Name-based Detection ---
+    // If name implies Video View, prioritize ThruPlay regardless of objective nuances
+    if (campaignName && (campaignName.includes('觀影') || campaignName.includes('Video') || campaignName.includes('View'))) {
+         const thru = findVal('video_thruplay_watched_actions');
+         if (thru > 0) return { value: thru, label: 'ThruPlay 次數' };
+    }
 
-    const leads = findVal('lead');
-    if (leads > 0) return leads;
-
-    const completedReg = findVal('complete_registration');
-    if (completedReg > 0) return completedReg;
-
-    // 2. Objective-based Fallbacks
+    // --- 1. Objective Specific Priority (To match screenshots) ---
     if (objective) {
+        // Messages / Engagement (Messages)
         if (objective.includes('MESSAGES') || objective === 'OUTCOME_ENGAGEMENT') {
+             // Priority 1: Conversations Started (Usually the main result for Message ads)
              const msg = findVal('onsite_conversion.messaging_conversation_started_7d');
-             if (msg > 0) return msg;
-        }
-        if (objective === 'OUTCOME_TRAFFIC') {
-             const lp = findVal('omni_landing_page_view') || findVal('landing_page_view') || findVal('link_click');
-             if (lp > 0) return lp;
-        }
-        if (objective === 'OUTCOME_AWARENESS') {
+             if (msg > 0) return { value: msg, label: '開始訊息對話' };
+             
+             // Priority 2: ThruPlay (For Video ads under Engagement objective)
              const thru = findVal('video_thruplay_watched_actions');
-             if (thru > 0) return thru;
+             if (thru > 0) return { value: thru, label: 'ThruPlay 次數' };
+
+             // Fallback for some engagement campaigns
+             const postEng = findVal('post_engagement');
+             if (postEng > 0) return { value: postEng, label: '貼文互動' };
+        }
+
+        // Traffic
+        if (objective === 'OUTCOME_TRAFFIC' || objective === 'TRAFFIC' || objective === 'LINK_CLICKS') {
+             // Priority 1: Landing Page Views (If pixel is active)
+             const lp = findVal('landing_page_view');
+             if (lp > 0) return { value: lp, label: '連結頁面瀏覽' };
+             
+             // Priority 2: Link Clicks
+             const lc = findVal('link_click');
+             if (lc > 0) return { value: lc, label: '連結點擊' };
+        }
+
+        // Awareness / Video Views
+        if (objective === 'OUTCOME_AWARENESS' || objective === 'VIDEO_VIEWS') {
+             const thru = findVal('video_thruplay_watched_actions');
+             if (thru > 0) return { value: thru, label: 'ThruPlay 次數' };
+             
+             const reach = findVal('reach'); // Reach is rarely an action, usually a metric, but check actions just in case
+        }
+
+        // Sales / Conversions
+        if (objective === 'OUTCOME_SALES' || objective === 'CONVERSIONS') {
+             const purch = findVal('purchase') || findVal('omni_purchase') || findVal('offsite_conversion.fb_pixel_purchase');
+             if (purch > 0) return { value: purch, label: '網站購買' };
+        }
+
+        // Leads
+        if (objective === 'OUTCOME_LEADS' || objective === 'LEAD_GENERATION') {
+             const lead = findVal('lead') || findVal('on_facebook_lead');
+             if (lead > 0) return { value: lead, label: '潛在客戶' };
         }
     }
 
-    // 3. General Priority
-    const messaging = findVal('onsite_conversion.messaging_conversation_started_7d');
-    if (messaging > 0) return messaging;
-
-    const thruPlay = findVal('video_thruplay_watched_actions');
-    if (thruPlay > 0) return thruPlay;
-
-    const lpView = findVal('omni_landing_page_view') || findVal('landing_page_view');
-    if (lpView > 0) return lpView;
+    // --- 2. Generic Priority (Fallbacks if objective doesn't match or result is 0) ---
     
-    return 0;
+    // Purchase
+    const purchase = findVal('purchase') || findVal('omni_purchase') || findVal('offsite_conversion.fb_pixel_purchase');
+    if (purchase > 0) return { value: purchase, label: '網站購買' };
+
+    // Leads
+    const leads = findVal('lead');
+    if (leads > 0) return { value: leads, label: '潛在客戶' };
+
+    // Messages
+    const messaging = findVal('onsite_conversion.messaging_conversation_started_7d');
+    if (messaging > 0) return { value: messaging, label: '開始訊息對話' };
+
+    // ThruPlay
+    const thruPlay = findVal('video_thruplay_watched_actions');
+    if (thruPlay > 0) return { value: thruPlay, label: 'ThruPlay 次數' };
+
+    // Landing Page View
+    const lpView = findVal('landing_page_view');
+    if (lpView > 0) return { value: lpView, label: '連結頁面瀏覽' };
+    
+    // Link Click
+    const linkClick = findVal('link_click');
+    if (linkClick > 0) return { value: linkClick, label: '連結點擊' };
+
+    // Engagement
+    const engagement = findVal('post_engagement');
+    if (engagement > 0) return { value: engagement, label: '貼文互動' };
+
+    return { value: 0, label: '成果' };
 };
 
 // Helper: Extract Image URL from complex creative object
@@ -163,9 +237,6 @@ const mapStatus = (effectiveStatus: string, stopTime?: string): string => {
 };
 
 // Helper: Get Budget Divider based on Currency
-// Logic: If currency is TWD, JPY, etc., API usually returns units (150 = 150), so divider is 1.
-// For USD, EUR, API returns cents (150 = 1.50), so divider is 100.
-// Note: This logic is tuned based on user feedback that TWD is appearing divided by 100 incorrectly.
 const getBudgetDivider = (currency: string): number => {
     const zeroDecimalCurrencies = [
         'BIF', 'CLP', 'DJF', 'GNF', 'ISK', 'JPY', 'KMF', 'KRW', 'MGA', 
@@ -203,7 +274,8 @@ const calculateMetrics = (
 
     const websitePurchases = parseFloat(actions.find((a: any) => a.action_type === 'offsite_conversion.fb_pixel_purchase')?.value || 0);
 
-    const conversions = getResultValue(actions, objective);
+    // Update: Get both value and dynamic label
+    const { value: conversions, label: resultType } = getResultData(actions, objective, item.campaign_name || item.ad_name);
 
     const conversionValueObj = actionValues.find((a: any) => a.action_type === 'purchase') 
       || actionValues.find((a: any) => a.action_type === 'omni_purchase');
@@ -215,6 +287,7 @@ const calculateMetrics = (
     const linkCtr = impressions > 0 ? (linkClicks / impressions) * 100 : 0;
     const linkCpc = linkClicks > 0 ? spend / linkClicks : 0;
     
+    // CPA & Cost Per Result (Dynamically calculated based on the specific result found)
     const costPerResult = conversions > 0 ? spend / conversions : 0;
     const cpa = websitePurchases > 0 ? spend / websitePurchases : 0;
     
@@ -242,13 +315,23 @@ const calculateMetrics = (
         budgetType = 'ABO'; 
     }
 
-    // 2. Messaging
+    // 2. Messaging Specific Metrics
+    // "Messaging Conversations Started" (開始訊息對話)
     const messagingConversationsStarted = parseFloat(actions.find((a: any) => a.action_type === 'onsite_conversion.messaging_conversation_started_7d')?.value || 0);
-    const newMessagingConnections = parseFloat(actions.find((a: any) => a.action_type === 'onsite_conversion.messaging_connection' || a.action_type === 'messaging_conversation_started_7d')?.value || 0);
+    
+    // "New Messaging Connections" (新的訊息聯繫對象) - Key Fix
+    // Try both naming conventions just in case, prioritizing the standard one
+    const newMessagingConnections = parseFloat(actions.find((a: any) => 
+        a.action_type === 'onsite_conversion.messaging_connection' || 
+        a.action_type === 'messaging_connection'
+    )?.value || 0);
+    
+    // "Cost Per New Messaging Connection" (每位新訊息聯繫對象成本) - Calculated
     const costPerNewMessagingConnection = newMessagingConnections > 0 ? spend / newMessagingConnections : 0;
 
-    // 3. Post Engagement Cost
-    const postEngagement = parseFloat(actions.find((a: any) => a.action_type === 'post_engagement' || a.action_type === 'link_click' || a.action_type === 'post_reaction' || a.action_type === 'comment' || a.action_type === 'post_share')?.value || 0);
+    // 3. Post Engagement Cost (Fixed: Strictly use 'post_engagement' action type)
+    // Do not sum up link clicks + reactions manually, rely on Meta's aggregated field if present.
+    const postEngagement = parseFloat(actions.find((a: any) => a.action_type === 'post_engagement')?.value || 0);
     const costPerPageEngagement = postEngagement > 0 ? spend / postEngagement : 0;
 
     return {
@@ -262,6 +345,7 @@ const calculateMetrics = (
         reach, linkClicks, websitePurchases,
         ctr, cpc, cpa, roas, linkCtr, linkCpc, conversionRate,
         cpm, frequency, costPerResult,
+        resultType, // Pass the dynamic label
         
         // New Metrics
         budget,
@@ -291,7 +375,7 @@ export const fetchMetaAdsData = async (
   // Fields to fetch
   const commonFields = 'campaign_name,adset_name,campaign_id,adset_id,impressions,clicks,spend,actions,action_values,reach,inline_link_clicks,cpm,frequency';
 
-  // Insights calls
+  // Insights calls (Use fetchAllPages)
   const campaignInsightsUrl = `${BASE_URL}/act_${accountId}/insights?` + new URLSearchParams({
     level: 'campaign',
     fields: `${commonFields},objective`, 
@@ -316,7 +400,7 @@ export const fetchMetaAdsData = async (
     access_token: token
   });
 
-  // Structure Status Calls
+  // Structure Status Calls (Use fetchAllPages)
   const campaignsUrl = `${BASE_URL}/act_${accountId}/campaigns?` + new URLSearchParams({
       fields: 'name,effective_status,objective,stop_time,daily_budget,lifetime_budget',
       limit: '500',
@@ -333,7 +417,7 @@ export const fetchMetaAdsData = async (
     access_token: token
   });
 
-  // Demographics
+  // Demographics (Use fetchAllPages)
   const genderUrl = `${BASE_URL}/act_${accountId}/insights?` + new URLSearchParams({
     level: 'campaign',
     fields: `${commonFields},objective`,
@@ -351,24 +435,24 @@ export const fetchMetaAdsData = async (
     access_token: token
   });
 
-  // Execute
+  // Execute using fetchAllPages for all endpoints
   const [
       campData, setData, adData, 
       campStruct, setStruct, adStruct,
       genderData, ageData
   ] = await Promise.all([
-      fetchWithRetry(campaignInsightsUrl), fetchWithRetry(adsetInsightsUrl), fetchWithRetry(adInsightsUrl),
-      fetchWithRetry(campaignsUrl), fetchWithRetry(adsetsUrl), fetchWithRetry(adsUrl),
-      fetchWithRetry(genderUrl), fetchWithRetry(ageUrl)
+      fetchAllPages(campaignInsightsUrl), fetchAllPages(adsetInsightsUrl), fetchAllPages(adInsightsUrl),
+      fetchAllPages(campaignsUrl), fetchAllPages(adsetsUrl), fetchAllPages(adsUrl),
+      fetchAllPages(genderUrl), fetchAllPages(ageUrl)
   ]);
 
-  if (campData.error) throw new Error(`Meta API Error: ${campData.error.message}`);
-
+  // Note: fetchAllPages returns Array, not { data: [] }. 
+  
   // --- Maps ---
   
   interface CampInfo { status: string; objective: string; stopTime?: string; daily_budget?: string; lifetime_budget?: string }
   const campaignMap = new Map<string, CampInfo>();
-  (campStruct.data || []).forEach((c: any) => {
+  (campStruct || []).forEach((c: any) => {
       campaignMap.set(c.id, { 
           status: c.effective_status, 
           objective: c.objective,
@@ -380,7 +464,7 @@ export const fetchMetaAdsData = async (
 
   interface AdSetInfo { status: string; endTime?: string; campaignId?: string; daily_budget?: string; lifetime_budget?: string }
   const adSetMap = new Map<string, AdSetInfo>();
-  (setStruct.data || []).forEach((s: any) => {
+  (setStruct || []).forEach((s: any) => {
       adSetMap.set(s.id, { 
           status: s.effective_status,
           endTime: s.end_time,
@@ -393,7 +477,7 @@ export const fetchMetaAdsData = async (
   const adStatusMap = new Map<string, string>();
   const adImageMap = new Map<string, string>();
   const adParentMap = new Map<string, string>(); 
-  (adStruct.data || []).forEach((ad: any) => {
+  (adStruct || []).forEach((ad: any) => {
       adStatusMap.set(ad.id, ad.effective_status);
       adParentMap.set(ad.id, ad.adset_id);
       
@@ -406,7 +490,7 @@ export const fetchMetaAdsData = async (
   // --- Process Rows with Currency Passed ---
   
   // 1. Campaign Rows
-  const campaignRows = (campData.data || []).map((item: any) => {
+  const campaignRows = (campData || []).map((item: any) => {
       const info = campaignMap.get(item.campaign_id);
       const status = info?.status || 'UNKNOWN';
       const objective = item.objective || info?.objective;
@@ -414,7 +498,7 @@ export const fetchMetaAdsData = async (
   });
 
   // 2. AdSet Rows
-  const adSetRows = (setData.data || []).map((item: any) => {
+  const adSetRows = (setData || []).map((item: any) => {
       const info = adSetMap.get(item.adset_id);
       const campInfo = campaignMap.get(item.campaign_id); 
       const status = info?.status || 'UNKNOWN';
@@ -423,7 +507,7 @@ export const fetchMetaAdsData = async (
   });
 
   // 3. Ad Rows
-  const adRows = (adData.data || []).map((item: any) => {
+  const adRows = (adData || []).map((item: any) => {
       const status = adStatusMap.get(item.ad_id) || 'UNKNOWN';
       
       const adSetId = item.adset_id || adParentMap.get(item.ad_id);
@@ -436,7 +520,7 @@ export const fetchMetaAdsData = async (
   });
 
   // 4. Demographics
-  const genderRows = (genderData.data || []).map((item: any) => {
+  const genderRows = (genderData || []).map((item: any) => {
     const info = campaignMap.get(item.campaign_id);
     const status = info?.status || 'Active';
     const objective = item.objective || info?.objective;
@@ -446,7 +530,7 @@ export const fetchMetaAdsData = async (
     }, objective);
   });
 
-  const ageRows = (ageData.data || []).map((item: any) => {
+  const ageRows = (ageData || []).map((item: any) => {
       const info = campaignMap.get(item.campaign_id);
       const status = info?.status || 'Active';
       const objective = item.objective || info?.objective;

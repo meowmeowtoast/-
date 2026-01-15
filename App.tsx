@@ -17,7 +17,7 @@ import { DateRangePicker } from './components/DateRangePicker';
 const APP_TITLE = "YANGYU 秧語廣告儀表板";
 
 // Hardcoded Dev Token (Updated to Long-Lived Token)
-const DEV_TOKEN = "EAAMzntvPNkYBQQLtoUXY3Hz5yAZCYVZCdtYlvG6czN3ZCc09pmfbJWqZCqTmEKZBCAtF3sDGqZA1FY6gz8SACGLS5EqwL1qxn7tMFmmCkIO0gkuJMwxw8N4ncTO8Mkg4RW5iA7wemin93qP8WkeZCws4bENj4fpULc9TWVpavYg2UJ33EYjeyYC0VZC0VxDXUQTwWoFhFfNqR1J0NueaZANLAKkTIbyBSQh925fJlZAb4DUcZCi68gdo9mSlh2MvGTBWGZBM5Hss45k5SxQqGdNTMvzJ08WN1GcsPrFhFRNhgK8ZD";
+const DEV_TOKEN = "EAAMzntvPNkYBQYkB4xZBjMJFdVgCW3YcAZASWIaZBgspy0oaVWFvwgR3WfsiWIeRNOSrTs8jK1NtQy6XAjpLdDt9FbzHcBdSdHDHngZB55crMqljI24dOmkUMK3cS5Tuzy9r5DuSAE9ZAjT7VG8ZCagFMS5ES7RyJnCdS51JkBzjYgZAynskLTZBOVrwTuH7hODoab4kW5P6FkWZANMYZA";
 
 const AVAILABLE_COLUMNS: ColumnDef[] = [
   { id: 'campaignName', label: '行銷活動名稱', type: 'text', width: 200 },
@@ -265,6 +265,8 @@ const App: React.FC = () => {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [dateRange, setDateRange] = useState(getLast30Days());
+  const prevDateRangeRef = useRef(dateRange); // Track previous date range
+
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
 
@@ -327,6 +329,30 @@ const App: React.FC = () => {
     };
   }, [isResizing]);
 
+  // Derived State
+  const activeProject = useMemo(() => 
+    projects.find(p => p.id === activeProjectId), 
+    [projects, activeProjectId]
+  );
+
+  // --- Auto Sync Logic ---
+  // Only trigger sync if:
+  // 1. A project is active and has Meta config
+  // 2. The date range *actually* changed (compare with ref)
+  useEffect(() => {
+      const isDateChanged = 
+          prevDateRangeRef.current.start !== dateRange.start || 
+          prevDateRangeRef.current.end !== dateRange.end;
+      
+      if (isDateChanged && activeProject?.metaConfig) {
+          // Trigger sync
+          handleSyncMeta(true);
+      }
+      
+      // Update ref
+      prevDateRangeRef.current = dateRange;
+  }, [dateRange, activeProject?.id]); // Depend on dateRange and project ID switch
+
   const startResizing = (e: React.MouseEvent) => {
     e.preventDefault();
     setIsResizing(true);
@@ -339,12 +365,6 @@ const App: React.FC = () => {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
   };
   const removeToast = (id: string) => setToasts(prev => prev.filter(t => t.id !== id));
-
-  // Derived State
-  const activeProject = useMemo(() => 
-    projects.find(p => p.id === activeProjectId), 
-    [projects, activeProjectId]
-  );
 
   // Aggregated Demographics Data
   const demographicData = useMemo(() => {
@@ -525,14 +545,21 @@ const App: React.FC = () => {
     setLoading(true);
     try {
       const results = await Promise.all(files.map(f => parseCSV(f)));
-      const newRows = results.flat();
+      const newRows = results.map(r => r.rows).flat();
+      const detectedCurrency = results.length > 0 ? results[0].currency : 'USD';
+
       if (newRows.length === 0) {
         addToast("未偵測到有效資料，請確認檔案格式", 'error');
         return;
       }
       setProjects(prev => prev.map(p => {
         if (p.id === activeProjectId) {
-          return { ...p, data: [...p.data, ...newRows], updatedAt: Date.now() };
+          return { 
+             ...p, 
+             data: [...p.data, ...newRows], 
+             currency: detectedCurrency, // Save currency from CSV
+             updatedAt: Date.now() 
+          };
         }
         return p;
       }));
@@ -620,6 +647,7 @@ const App: React.FC = () => {
               id: crypto.randomUUID(),
               name: `Meta: ${account.name}`,
               data: rows,
+              currency: account.currency || 'USD', // Store Project Currency
               metaConfig: { 
                   accountId: account.account_id, 
                   accountName: account.name, 
@@ -789,7 +817,7 @@ const App: React.FC = () => {
       return {
           position: 'sticky',
           left: `${left}px`,
-          zIndex: isHeader ? 30 : 20, // Headers higher than body sticky cells
+          zIndex: isHeader ? 20 : 10, // Lower Z-Index to avoid covering DatePicker (20 for header, 10 for body)
           backgroundColor: isHeader ? '#18181b' : '#09090b', // match standard header/row bg
       } as React.CSSProperties;
   };
@@ -1104,7 +1132,8 @@ const App: React.FC = () => {
                     </Card>
                   )}
                   {/* ... (Existing Toolbar) ... */}
-                  <div className="sticky top-0 bg-[#09090b] py-2 z-20 border-b border-zinc-800/0">
+                  {/* UPDATED Z-INDEX TO 50 to sit above table headers */}
+                  <div className="sticky top-0 bg-[#09090b] py-2 z-50 border-b border-zinc-800/0">
                     <div className="flex flex-col xl:flex-row gap-4 items-start xl:items-center justify-between">
                         
                         {/* Tabs - Scrollable Area */}
@@ -1212,7 +1241,7 @@ const App: React.FC = () => {
                                     <td className="px-4 py-3">{demographicData.total.name}</td>
                                     {DEMO_TABLE_COLS.map(col => (
                                         <td key={col.id} className="px-4 py-3 tabular-nums">
-                                            {formatVal(demographicData.total[col.id], col.type, activeProject.metaConfig?.currency)}
+                                            {formatVal(demographicData.total[col.id], col.type, activeProject.currency)}
                                         </td>
                                     ))}
                                 </tr>
@@ -1222,7 +1251,7 @@ const App: React.FC = () => {
                                         <td className="px-4 py-2.5 font-medium text-zinc-300">{row.name}</td>
                                         {DEMO_TABLE_COLS.map(col => (
                                             <td key={col.id} className={cn("px-4 py-2.5 text-zinc-400 tabular-nums", col.type === 'currency' && "text-zinc-300")}>
-                                                {formatVal(row[col.id], col.type, activeProject.metaConfig?.currency)}
+                                                {formatVal(row[col.id], col.type, activeProject.currency)}
                                             </td>
                                         ))}
                                     </tr>
@@ -1246,10 +1275,10 @@ const App: React.FC = () => {
                                         style={stickyStyle}
                                         className={cn(
                                           "px-4 py-3 font-medium text-zinc-500 text-xs uppercase tracking-wider cursor-pointer hover:text-zinc-300 transition-colors select-none group",
-                                          stickyStyle.position === 'sticky' && "shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)] border-r border-zinc-800 z-20"
+                                          stickyStyle.position === 'sticky' && "shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)] border-r border-zinc-800"
                                         )}
                                     >
-                                    <div className="flex items-center gap-1">
+                                    <div className={cn("flex items-center gap-1", (colId === 'conversions' || colId === 'costPerResult') && "justify-end")}>
                                         {def?.label}
                                         <span className="text-zinc-600 group-hover:text-zinc-500">
                                             {isSorted ? (
@@ -1315,14 +1344,52 @@ const App: React.FC = () => {
                                                  {(val === 0 && row.budgetType === 'ABO') ? (
                                                      <span className="text-xs text-zinc-500">使用廣告組合預算</span>
                                                  ) : (
-                                                     val ? `${formatVal(val, 'currency', activeProject.metaConfig?.currency)}${row.budgetType === 'Daily' ? '/日' : '/總'}` : '-'
+                                                     val ? `${formatVal(val, 'currency', activeProject.currency)}${row.budgetType === 'Daily' ? '/日' : '/總'}` : '-'
                                                  )}
                                              </td>
                                         }
 
+                                        // --- CUSTOM RENDERING FOR RESULTS & COST PER RESULT ---
+                                        if (colId === 'conversions') {
+                                            return (
+                                                <td key={colId} className="px-4 py-2.5 text-right">
+                                                    <div className="flex flex-col items-end">
+                                                        <span className="text-zinc-200 font-medium border-b border-dotted border-zinc-600 mb-0.5 pb-0.5 leading-none">{val > 0 ? val.toLocaleString() : '-'}</span>
+                                                        <span className="text-[10px] text-zinc-500">{row.resultType || '成果'}</span>
+                                                    </div>
+                                                </td>
+                                            )
+                                        }
+                                        if (colId === 'costPerResult') {
+                                             return (
+                                                <td key={colId} className="px-4 py-2.5 text-right">
+                                                    <div className="flex flex-col items-end">
+                                                        <span className="text-zinc-200 font-medium leading-none">{val > 0 ? formatVal(val, 'currency', activeProject.currency) : '-'}</span>
+                                                        <span className="text-[10px] text-zinc-500">每次{row.resultType || '成果'}成本</span>
+                                                    </div>
+                                                </td>
+                                            )
+                                        }
+                                        // --------------------------------------------------------
+                                        // New Messaging Connections Column Special Handling
+                                        if (colId === 'newMessagingConnections') {
+                                            return (
+                                                <td key={colId} className="px-4 py-2.5 text-zinc-300 text-right tabular-nums">
+                                                    {val > 0 ? val.toLocaleString() : '-'}
+                                                </td>
+                                            )
+                                        }
+                                        if (colId === 'costPerNewMessagingConnection') {
+                                            return (
+                                                <td key={colId} className="px-4 py-2.5 text-zinc-300 text-right tabular-nums">
+                                                    {val > 0 ? formatVal(val, 'currency', activeProject.currency) : '-'}
+                                                </td>
+                                            )
+                                        }
+
                                         return (
                                         <td key={colId} className={cn("px-4 py-2.5 text-zinc-400 tabular-nums", def?.type === 'currency' && "text-zinc-300", (colId === 'roas' && row.roas > 3) && "text-emerald-400 font-medium")}>
-                                            {formatVal(val, def?.type || 'text', activeProject.metaConfig?.currency)}
+                                            {formatVal(val, def?.type || 'text', activeProject.currency)}
                                         </td>
                                         );
                                     })}
