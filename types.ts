@@ -21,6 +21,8 @@ export interface AdRow {
   reach: number; // 觸及人數
   linkClicks: number; // 連結點擊
   websitePurchases: number; // 網站購買
+  videoViews: number; // 3-second video views
+  landingPageViews: number; // Landing page views
   
   // Demographics
   age?: string;
@@ -44,6 +46,8 @@ export interface AdRow {
   // New Fields
   budget?: number; // 預算
   budgetType?: string; // Daily vs Lifetime
+  optimizationGoal?: string; // Meta Optimization Goal (e.g. THRUPLAY, REACH)
+
   costPerPageEngagement?: number; // 每次粉絲專頁互動成本
   newMessagingConnections?: number; // 新的訊息聯繫對象
   costPerNewMessagingConnection?: number; // 每位新訊息聯繫對象成本
@@ -54,6 +58,10 @@ export interface AdRow {
   adGroupName?: string; // Ad Set for Meta
   imageUrl?: string; // For creative preview
   
+  // Debug Data
+  objective?: string;
+  rawActions?: any[];
+
   // Flexible bucket for extra columns
   [key: string]: any;
 }

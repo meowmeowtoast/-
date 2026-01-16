@@ -1,3 +1,4 @@
+
 import React, { useEffect, useState } from 'react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -72,11 +73,12 @@ export const Select: React.FC<React.SelectHTMLAttributes<HTMLSelectElement>> = (
 // --- New Components ---
 
 // Dialog / Modal
+// Updated z-index to z-[100] to be above sticky headers (usually z-50)
 export const Dialog: React.FC<{ isOpen: boolean; onClose: () => void; children: React.ReactNode; title?: string }> = ({ isOpen, onClose, children, title }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
       <div className="relative w-full max-w-lg bg-[#09090b] border border-zinc-800 rounded-xl shadow-2xl animate-in zoom-in-95 duration-200" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between p-4 border-b border-zinc-800">
           <h3 className="text-sm font-medium text-zinc-100">{title}</h3>
@@ -103,7 +105,7 @@ export interface ToastMessage {
 
 export const ToastContainer: React.FC<{ toasts: ToastMessage[]; removeToast: (id: string) => void }> = ({ toasts, removeToast }) => {
   return (
-    <div className="fixed bottom-4 right-4 z-[60] flex flex-col gap-2 pointer-events-none">
+    <div className="fixed bottom-4 right-4 z-[110] flex flex-col gap-2 pointer-events-none">
       {toasts.map((toast) => (
         <div 
           key={toast.id} 

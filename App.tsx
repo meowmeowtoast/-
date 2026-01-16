@@ -4,7 +4,7 @@ import {
   Upload, Download, Settings, RefreshCw, Layers, Plus, Trash2, Sparkles, 
   Folder, FileText, MoreHorizontal, Edit2, Search, X, ChevronRight, GripVertical, Filter,
   PanelLeftClose, HelpCircle, FileQuestion, ImageIcon, ExternalLink, Facebook, Calendar, Link,
-  Users, Key, ArrowUpDown, ChevronUp, ChevronDown, AlertTriangle, FileSpreadsheet
+  Users, Key, ArrowUpDown, ChevronUp, ChevronDown, AlertTriangle, FileSpreadsheet, Code, Check
 } from 'lucide-react';
 import { parseCSV, exportToExcel } from './services/dataService';
 import { generateInsights } from './services/geminiService';
@@ -24,7 +24,7 @@ const AVAILABLE_COLUMNS: ColumnDef[] = [
   { id: 'imageUrl', label: '素材預覽', type: 'image', width: 80 },
   { id: 'name', label: '名稱', type: 'text', width: 250 }, 
   { id: 'status', label: '投遞狀態', type: 'text' },
-  { id: 'budget', label: '預算', type: 'currency' }, // New
+  { id: 'budget', label: '預算', type: 'currency' },
   
   // Engagement
   { id: 'impressions', label: '曝光次數', type: 'number' },
@@ -37,6 +37,10 @@ const AVAILABLE_COLUMNS: ColumnDef[] = [
   { id: 'linkClicks', label: '連結點擊', type: 'number' },
   { id: 'linkCtr', label: '連結 CTR', type: 'percent' },
   { id: 'linkCpc', label: '連結 CPC', type: 'currency' },
+  { id: 'landingPageViews', label: '頁面瀏覽', type: 'number' }, // New
+  
+  // Video
+  { id: 'videoViews', label: '影片觀看(3秒)', type: 'number' }, // New
   
   // Conversions & Costs
   { id: 'spend', label: '花費金額', type: 'currency' },
@@ -117,7 +121,6 @@ const DEFAULT_PRESETS: Preset[] = [
       columns: [
           'name', // 行銷活動 (Mapped to name for Campaign level)
           'status', // 投遞狀態
-          // Action (操作) is skipped as it's UI
           'budget', // 預算
           'impressions', // 曝光次數
           'reach', // 觸及人數
@@ -138,6 +141,16 @@ const DEFAULT_PRESETS: Preset[] = [
           'messagingConversationsStarted' // 訊息對話開始次數
       ]
   }
+];
+
+const OVERRIDE_OPTIONS = [
+    { value: 'purchase', label: '網站購買 (Purchase)' },
+    { value: 'on_facebook_lead', label: '潛在客戶 (Leads)' },
+    { value: 'link_click', label: '連結點擊 (Link Clicks)' },
+    { value: 'omni_landing_page_view', label: '頁面瀏覽 (Landing Page View)' },
+    { value: 'video_thruplay_watched_actions', label: 'ThruPlay (Video)' },
+    { value: 'onsite_conversion.messaging_conversation_started_7d', label: '開始訊息對話 (Messages)' },
+    { value: 'post_engagement', label: '貼文互動 (Engagement)' },
 ];
 
 const getLast30Days = () => {
@@ -239,16 +252,11 @@ const App: React.FC = () => {
   const [isMetaModalOpen, setIsMetaModalOpen] = useState(false);
   const [isTokenManagerOpen, setIsTokenManagerOpen] = useState(false);
   const [showExportHelp, setShowExportHelp] = useState(false);
-  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
 
-  // Export Options
-  const [exportOptions, setExportOptions] = useState({
-    includeCurrentView: true,
-    includeRawCampaigns: true,
-    includeRawAdSets: false,
-    includeRawAds: false
-  });
+  // Debug Modal & Override
+  const [selectedDebugRow, setSelectedDebugRow] = useState<AdRow | null>(null);
+  const [overrideResultType, setOverrideResultType] = useState<string>("");
   
   // Meta API State
   const [metaToken, setMetaToken] = useState("");
@@ -296,6 +304,11 @@ const App: React.FC = () => {
     }
   }, []);
 
+  // Reset override state when row changes
+  useEffect(() => {
+    setOverrideResultType("");
+  }, [selectedDebugRow]);
+
   // Auto-switch presets based on tabs & Reset Sort
   useEffect(() => {
       if (activeTab === 'campaign') applyPreset('campaign_report');
@@ -336,22 +349,16 @@ const App: React.FC = () => {
   );
 
   // --- Auto Sync Logic ---
-  // Only trigger sync if:
-  // 1. A project is active and has Meta config
-  // 2. The date range *actually* changed (compare with ref)
   useEffect(() => {
       const isDateChanged = 
           prevDateRangeRef.current.start !== dateRange.start || 
           prevDateRangeRef.current.end !== dateRange.end;
       
       if (isDateChanged && activeProject?.metaConfig) {
-          // Trigger sync
           handleSyncMeta(true);
       }
-      
-      // Update ref
       prevDateRangeRef.current = dateRange;
-  }, [dateRange, activeProject?.id]); // Depend on dateRange and project ID switch
+  }, [dateRange, activeProject?.id]); 
 
   const startResizing = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -365,6 +372,74 @@ const App: React.FC = () => {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
   };
   const removeToast = (id: string) => setToasts(prev => prev.filter(t => t.id !== id));
+
+  // --- Manual Override Handler ---
+  const applyOverride = () => {
+      if (!selectedDebugRow || !activeProject || !overrideResultType) return;
+      
+      const targetType = overrideResultType;
+      
+      const newProjects = projects.map(p => {
+          if (p.id !== activeProject.id) return p;
+          
+          const newData = p.data.map(row => {
+              if (row.id === selectedDebugRow.id) {
+                  // 1. Find new conversion value
+                  let newVal = 0;
+                  // Try to find in rawActions
+                  if (row.rawActions && Array.isArray(row.rawActions)) {
+                      const action = row.rawActions.find((a: any) => a.action_type === targetType);
+                      if (action) newVal = parseFloat(action.value);
+                  } 
+                  // If 0, try to check known columns (fallback for CSV imported data which might lack rawActions)
+                  if (newVal === 0) {
+                      if (targetType === 'link_click') newVal = row.linkClicks;
+                      else if (targetType === 'purchase') newVal = row.websitePurchases;
+                      else if (targetType === 'omni_landing_page_view') newVal = row.landingPageViews;
+                      else if (targetType === 'video_thruplay_watched_actions') newVal = row.videoViews; // approx
+                  }
+
+                  // 2. Calculate New Cost Per Result
+                  // Logic: Try to use API provided cost_per_action_type if available (more accurate), else fallback to spend/val
+                  let newCost = 0;
+                  const cpaList = row.costPerActionType as any[]; // Need to cast since we added this field
+                  if (cpaList && Array.isArray(cpaList)) {
+                      const cpaObj = cpaList.find((c: any) => c.action_type === targetType);
+                      if (cpaObj) newCost = parseFloat(cpaObj.value);
+                  }
+                  
+                  if (newCost === 0 && newVal > 0) {
+                      newCost = row.spend / newVal;
+                  }
+
+                  // 3. Find label
+                  const labelOpt = OVERRIDE_OPTIONS.find(o => o.value === targetType);
+                  const newLabel = labelOpt ? labelOpt.label.split(' (')[0] : targetType;
+
+                  // 4. Update row
+                  const updatedRow = { 
+                      ...row, 
+                      conversions: newVal, 
+                      resultType: newLabel, 
+                      costPerResult: newCost,
+                      optimizationGoal: `MANUAL_${targetType.toUpperCase()}` // Mark as manually overridden
+                  };
+                  
+                  // Update current selected row reference to reflect changes immediately in dialog
+                  setSelectedDebugRow(updatedRow);
+                  
+                  return updatedRow;
+              }
+              return row;
+          });
+          
+          return { ...p, data: newData, updatedAt: Date.now() };
+      });
+      
+      setProjects(newProjects);
+      addToast("成果類型已更新", "success");
+  };
+
 
   // Aggregated Demographics Data
   const demographicData = useMemo(() => {
@@ -403,11 +478,8 @@ const App: React.FC = () => {
     });
 
     let result = Object.values(groups).map(calcRates);
-
-    // Sort
     result.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 
-    // Grand Total
     const total = result.reduce((acc, curr) => ({
         impressions: acc.impressions + curr.impressions,
         clicks: acc.clicks + curr.clicks,
@@ -440,7 +512,7 @@ const App: React.FC = () => {
         if (activeTab === 'creative') {
              data = data.filter(row => row.level === 'ad' || row.level === 'creative');
         } else if (activeTab === 'yangyu') {
-             // Yangyu Default preset usually implies Campaign Level view (based on the CSV)
+             // Yangyu Default preset usually implies Campaign Level view
              data = data.filter(row => row.level === 'campaign');
         } else {
              data = data.filter(row => row.level === activeTab);
@@ -454,7 +526,6 @@ const App: React.FC = () => {
             return s === 'active' || s === 'enabled' || s === 'in_process' || s === 'with_issues' || s === '進行中' || s === '審查中' || s === '預審通過';
         });
     } else if (statusFilter === 'delivered') {
-        // "Delivered" usually implies impressions > 0
         data = data.filter(row => row.impressions > 0);
     }
 
@@ -475,7 +546,6 @@ const App: React.FC = () => {
             const aVal = a[sortConfig.key];
             const bVal = b[sortConfig.key];
             
-            // Handle null/undefined
             if (aVal === bVal) return 0;
             if (aVal === null || aVal === undefined) return 1;
             if (bVal === null || bVal === undefined) return -1;
@@ -495,6 +565,20 @@ const App: React.FC = () => {
 
     return data;
   }, [activeProject, activeTab, searchQuery, sortConfig, statusFilter]);
+
+  // Ensure sticky columns are always on the left in the visibleColumns array
+  const sortedVisibleColumns = useMemo(() => {
+      return visibleColumns.slice().sort((a, b) => {
+          const ia = AVAILABLE_COLUMNS.findIndex(c => c.id === a);
+          const ib = AVAILABLE_COLUMNS.findIndex(c => c.id === b);
+          // If both are found, sort by their index in AVAILABLE_COLUMNS
+          if (ia !== -1 && ib !== -1) return ia - ib;
+          // If one is missing (shouldn't happen), push to end
+          if (ia === -1) return 1;
+          if (ib === -1) return -1;
+          return 0;
+      });
+  }, [visibleColumns]);
 
   // Sorting Handler
   const requestSort = (key: string) => {
@@ -595,7 +679,6 @@ const App: React.FC = () => {
 
   // --- Meta API ---
   const handleFetchAccounts = async () => {
-    // Determine which token to use
     let tokenToUse = metaToken;
     if (selectedTokenId) {
         const stored = storedTokens.find(t => t.id === selectedTokenId);
@@ -610,7 +693,6 @@ const App: React.FC = () => {
         setMetaAccounts(accounts);
         if (accounts.length > 0) setSelectedMetaAccount(accounts[0].account_id);
     } catch (e: any) {
-        // Better error handling for token issues
         const errorMsg = e.message || "";
         if (errorMsg.includes("Session has expired") || errorMsg.includes("Error validating access token")) {
             addToast("您的 Access Token 已過期或失效。請使用長效 Token 或重新取得。", 'error');
@@ -641,18 +723,18 @@ const App: React.FC = () => {
               selectedMetaAccount, 
               dateRange.start, 
               dateRange.end, 
-              account.currency || 'USD' // Pass currency
+              account.currency || 'USD'
           );
           const newProject: Project = {
               id: crypto.randomUUID(),
               name: `Meta: ${account.name}`,
               data: rows,
-              currency: account.currency || 'USD', // Store Project Currency
+              currency: account.currency || 'USD',
               metaConfig: { 
                   accountId: account.account_id, 
                   accountName: account.name, 
                   token: tokenToUse,
-                  currency: account.currency || 'USD' // Store currency
+                  currency: account.currency || 'USD'
               },
               createdAt: Date.now(),
               updatedAt: Date.now()
@@ -712,26 +794,44 @@ const App: React.FC = () => {
   };
 
   const handleExportClick = () => {
-      if (activeProject) {
-          setIsExportModalOpen(true);
-      }
-  };
+    if (!activeProject) return;
+    
+    addToast("正在準備 Excel 報表...", 'info');
 
-  const handleExportConfirm = () => {
-    if (activeProject) {
-      const optionsWithData = {
-          filename: activeProject.name,
-          ...exportOptions,
-          visibleColumns,
-          columnDefs: AVAILABLE_COLUMNS,
-          currentViewData: filteredData
-      };
-      
-      exportToExcel(activeProject.data, optionsWithData as any);
-      
-      addToast("報表下載中...", 'info');
-      setIsExportModalOpen(false);
+    // 1. 決定要匯出的主要數據
+    let dataToExport: any[] = filteredData;
+    let columnsToExport = visibleColumns;
+    let sheetName = getTabLabel(activeTab);
+    let columnDefs = AVAILABLE_COLUMNS;
+
+    // 2. 特殊處理：人口統計數據 (Aggregate Data)
+    if (activeTab === 'age' || activeTab === 'gender') {
+        if (demographicData) {
+            // 需要包含第一欄 (年齡/性別)，這裡用 'name' 作為 Key
+            dataToExport = demographicData.rows;
+            columnsToExport = ['name', ...DEMO_TABLE_COLS.map(c => c.id)];
+            columnDefs = [
+                { id: 'name', label: activeTab === 'age' ? '年齡' : '性別', type: 'text' },
+                ...DEMO_TABLE_COLS
+            ] as ColumnDef[];
+        }
     }
+
+    // 3. 執行匯出
+    exportToExcel({
+        filename: `${activeProject.name}_${sheetName}`,
+        sheets: [
+            {
+                name: sheetName,
+                data: dataToExport,
+                columns: columnsToExport,
+                columnDefs: columnDefs
+            }
+        ],
+        rawRows: activeProject.data // 附帶完整原始數據
+    });
+
+    addToast("下載已開始", 'success');
   };
 
   const handleAnalysis = async () => {
@@ -795,8 +895,7 @@ const App: React.FC = () => {
   };
 
   // Helper function to calculate sticky offsets dynamically
-  // We want to sticky: Campaign Name, Image (if visible), and Name.
-  // We need to know the width of preceding sticky columns.
+  // FIX: Added background color and box-shadow to prevent gaps/transparency issues
   const getStickyStyle = (colId: string, isHeader: boolean = false) => {
       const stickyCols = ['campaignName', 'imageUrl', 'name'];
       if (!stickyCols.includes(colId)) return {};
@@ -804,6 +903,9 @@ const App: React.FC = () => {
       let left = 0;
       // Fixed widths based on AVAILABLE_COLUMNS definition in App.tsx
       // campaignName: 200, imageUrl: 80, name: 250
+      
+      // Calculate Left Offset based on the ORDER in sortedVisibleColumns
+      // We assume visibleColumns are sorted such that sticky ones are first.
       
       if (colId === 'campaignName') {
           left = 0;
@@ -814,11 +916,19 @@ const App: React.FC = () => {
           if (visibleColumns.includes('imageUrl')) left += 80;
       }
       
+      const isLastSticky = 
+        (colId === 'name') || 
+        (colId === 'imageUrl' && !visibleColumns.includes('name')) ||
+        (colId === 'campaignName' && !visibleColumns.includes('imageUrl') && !visibleColumns.includes('name'));
+
       return {
           position: 'sticky',
           left: `${left}px`,
-          zIndex: isHeader ? 20 : 10, // Lower Z-Index to avoid covering DatePicker (20 for header, 10 for body)
-          backgroundColor: isHeader ? '#18181b' : '#09090b', // match standard header/row bg
+          zIndex: isHeader ? 30 : 20,
+          // Using box-shadow to simulate border avoids sub-pixel rendering gaps
+          boxShadow: isLastSticky ? '2px 0 5px -2px rgba(0,0,0,0.5)' : 'none',
+          // Explicitly set background color to cover content behind
+          backgroundColor: isHeader ? '#18181b' : '#09090b', // zinc-900 for header, zinc-950 for body
       } as React.CSSProperties;
   };
 
@@ -849,6 +959,59 @@ const App: React.FC = () => {
          </div>
       </Dialog>
 
+      {/* DEBUG DATA DIALOG */}
+      <Dialog isOpen={!!selectedDebugRow} onClose={() => setSelectedDebugRow(null)} title="API 原始數據檢查">
+         <div className="space-y-4 max-h-[70vh] overflow-y-auto">
+             <div className="grid grid-cols-2 gap-4">
+                 <div className="bg-zinc-900 border border-zinc-800 p-3 rounded-md">
+                    <h4 className="text-xs font-semibold text-zinc-500 mb-1">行銷活動目標 (Objective)</h4>
+                    <div className="text-sm text-zinc-200 font-mono">{selectedDebugRow?.objective || 'N/A'}</div>
+                 </div>
+                 <div className="bg-zinc-900 border border-zinc-800 p-3 rounded-md">
+                    <h4 className="text-xs font-semibold text-zinc-500 mb-1">優化目標 (Optimization Goal)</h4>
+                    <div className="text-sm text-zinc-200 font-mono">{selectedDebugRow?.optimizationGoal || 'N/A'}</div>
+                 </div>
+             </div>
+             
+             {/* MANUAL OVERRIDE SECTION */}
+             <div className="bg-zinc-900/50 border border-zinc-800/50 p-4 rounded-lg">
+                 <h4 className="text-sm font-medium text-zinc-200 mb-3 flex items-center gap-2">
+                     <Edit2 size={14} className="text-indigo-400"/> 
+                     手動替換成果類型 (Override Result)
+                 </h4>
+                 <div className="flex gap-2">
+                     <Select 
+                        value={overrideResultType} 
+                        onChange={e => setOverrideResultType(e.target.value)}
+                        className="flex-1"
+                     >
+                        <option value="">選擇要替換的指標...</option>
+                        {OVERRIDE_OPTIONS.map(opt => (
+                            <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
+                     </Select>
+                     <Button onClick={applyOverride} disabled={!overrideResultType}>
+                        套用變更
+                     </Button>
+                 </div>
+                 <p className="text-[10px] text-zinc-500 mt-2">
+                    注意：此操作會強制將該列的「成果」與「每次成果成本」改為您選擇的指標。
+                 </p>
+             </div>
+
+             <div>
+                 <h4 className="text-xs font-semibold text-zinc-500 mb-2">Actions (所有操作/成果)</h4>
+                 {selectedDebugRow?.rawActions && selectedDebugRow.rawActions.length > 0 ? (
+                     <pre className="bg-zinc-950 p-3 rounded-md border border-zinc-800 text-[10px] text-zinc-300 font-mono overflow-auto max-h-[400px] whitespace-pre-wrap">
+                         {JSON.stringify(selectedDebugRow.rawActions, null, 2)}
+                     </pre>
+                 ) : (
+                     <div className="text-sm text-zinc-500 italic">無 Action 資料</div>
+                 )}
+             </div>
+         </div>
+      </Dialog>
+
       <Dialog isOpen={!!projectToDelete} onClose={() => setProjectToDelete(null)} title="確認刪除專案">
           <div className="space-y-4">
               <div className="flex items-center gap-3 p-3 bg-red-950/30 border border-red-900/50 rounded-md text-red-300">
@@ -858,58 +1021,6 @@ const App: React.FC = () => {
               <div className="flex justify-end gap-2">
                   <Button variant="ghost" onClick={() => setProjectToDelete(null)}>取消</Button>
                   <Button variant="danger" onClick={confirmDeleteProject}>確認刪除</Button>
-              </div>
-          </div>
-      </Dialog>
-
-      {/* Export Options Modal */}
-      <Dialog isOpen={isExportModalOpen} onClose={() => setIsExportModalOpen(false)} title="匯出報表設定">
-          <div className="space-y-5">
-              <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-md">
-                 <h4 className="text-sm font-medium text-indigo-200 mb-2 flex items-center gap-2">
-                    <FileSpreadsheet size={16}/> 選擇匯出分頁
-                 </h4>
-                 <p className="text-xs text-zinc-400 mb-3">勾選您希望包含在 Excel 報表中的工作表。</p>
-                 
-                 <div className="space-y-3">
-                     <label className="flex items-center gap-3 p-2 bg-zinc-900/50 rounded cursor-pointer border border-zinc-800 hover:border-zinc-700">
-                         <Checkbox 
-                            checked={exportOptions.includeCurrentView} 
-                            onChange={e => setExportOptions(prev => ({...prev, includeCurrentView: e.target.checked}))}
-                         />
-                         <div>
-                             <div className="text-sm text-zinc-200 font-medium">當前檢視 (Current View)</div>
-                             <div className="text-xs text-zinc-500">
-                                 包含目前篩選的 {filteredData.length} 筆資料，且僅顯示您勾選的 {visibleColumns.length} 個欄位。
-                             </div>
-                         </div>
-                     </label>
-
-                     <div className="border-t border-zinc-800 my-2 pt-2">
-                        <p className="text-xs text-zinc-500 mb-2 uppercase tracking-wider font-semibold">原始數據 (Raw Data)</p>
-                         <div className="grid grid-cols-1 gap-2">
-                            <label className="flex items-center gap-2 text-sm text-zinc-400 hover:text-zinc-200 cursor-pointer">
-                                <Checkbox checked={exportOptions.includeRawCampaigns} onChange={e => setExportOptions(prev => ({...prev, includeRawCampaigns: e.target.checked}))} />
-                                廣告活動 (Campaigns) - 完整數據
-                            </label>
-                            <label className="flex items-center gap-2 text-sm text-zinc-400 hover:text-zinc-200 cursor-pointer">
-                                <Checkbox checked={exportOptions.includeRawAdSets} onChange={e => setExportOptions(prev => ({...prev, includeRawAdSets: e.target.checked}))} />
-                                廣告受眾 (Ad Sets) - 完整數據
-                            </label>
-                            <label className="flex items-center gap-2 text-sm text-zinc-400 hover:text-zinc-200 cursor-pointer">
-                                <Checkbox checked={exportOptions.includeRawAds} onChange={e => setExportOptions(prev => ({...prev, includeRawAds: e.target.checked}))} />
-                                廣告/素材 (Ads) - 完整數據
-                            </label>
-                         </div>
-                     </div>
-                 </div>
-              </div>
-
-              <div className="flex justify-end gap-2">
-                  <Button variant="ghost" onClick={() => setIsExportModalOpen(false)}>取消</Button>
-                  <Button onClick={handleExportConfirm} className="bg-emerald-600 hover:bg-emerald-500 text-white">
-                      <Download size={14} className="mr-2"/> 確認匯出 Excel
-                  </Button>
               </div>
           </div>
       </Dialog>
@@ -1060,7 +1171,7 @@ const App: React.FC = () => {
                 <Key size={14} /><span>Token 管理</span>
              </Button>
              <div className="flex items-center justify-between text-xs text-zinc-600 px-1 pt-2 border-t border-zinc-800/50">
-                 <div className="flex gap-2"><span>v1.9.0</span><span>Pro</span></div>
+                 <div className="flex gap-2"><span>v1.9.1</span><span>Pro</span></div>
              </div>
         </div>
         <div onMouseDown={startResizing} className="absolute right-0 top-0 w-1 h-full cursor-col-resize hover:bg-indigo-500/50 transition-colors z-50 opacity-0 group-hover/sidebar:opacity-100" />
@@ -1092,7 +1203,7 @@ const App: React.FC = () => {
                       <Button onClick={handleAnalysis} variant="secondary" className="h-8 text-xs gap-2">
                         {isAnalyzing ? <RefreshCw className="animate-spin" size={14} /> : <Sparkles size={14} className="text-amber-400"/>} AI 分析
                       </Button>
-                      <Button onClick={handleExportClick} variant="primary" className="h-8 text-xs gap-2"><Download size={14} /> 匯出</Button>
+                      <Button onClick={handleExportClick} variant="primary" className="h-8 text-xs gap-2"><Download size={14} /> 一鍵下載報表</Button>
                     </>
                   )}
                </div>
@@ -1263,7 +1374,7 @@ const App: React.FC = () => {
                         <table className="w-full text-left text-sm whitespace-nowrap border-collapse">
                             <thead>
                             <tr className="border-b border-zinc-800 bg-zinc-900/80">
-                                {visibleColumns.map(colId => {
+                                {sortedVisibleColumns.map(colId => {
                                 const def = AVAILABLE_COLUMNS.find(c => c.id === colId);
                                 const isSorted = sortConfig?.key === colId;
                                 const stickyStyle = getStickyStyle(colId, true);
@@ -1275,7 +1386,7 @@ const App: React.FC = () => {
                                         style={stickyStyle}
                                         className={cn(
                                           "px-4 py-3 font-medium text-zinc-500 text-xs uppercase tracking-wider cursor-pointer hover:text-zinc-300 transition-colors select-none group",
-                                          stickyStyle.position === 'sticky' && "shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)] border-r border-zinc-800"
+                                          stickyStyle.position === 'sticky' ? "border-r-0" : ""
                                         )}
                                     >
                                     <div className={cn("flex items-center gap-1", (colId === 'conversions' || colId === 'costPerResult') && "justify-end")}>
@@ -1302,14 +1413,15 @@ const App: React.FC = () => {
                                 
                                 return (
                                     <tr key={row.id} className="hover:bg-zinc-800/30 transition-colors group">
-                                    {visibleColumns.map(colId => {
+                                    {sortedVisibleColumns.map(colId => {
                                         const def = AVAILABLE_COLUMNS.find(c => c.id === colId);
                                         const val = row[colId];
                                         const stickyStyle = getStickyStyle(colId, false);
+                                        const stickyClass = stickyStyle.position === 'sticky' ? "border-r-0 group-hover:bg-[#18181b]" : "";
                                         
                                         if (colId === 'campaignName') {
                                             return (
-                                                <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5 max-w-[200px] truncate text-zinc-300 font-medium", stickyStyle.position === 'sticky' && "shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)] border-r border-zinc-800 group-hover:bg-[#18181b]")}>
+                                                <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5 max-w-[200px] truncate text-zinc-300 font-medium", stickyClass)}>
                                                     {!isSameCampaign && <span title={val} className="text-indigo-300">{val}</span>}
                                                 </td>
                                             );
@@ -1317,7 +1429,7 @@ const App: React.FC = () => {
 
                                         if (colId === 'imageUrl') {
                                             return (
-                                                <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5", stickyStyle.position === 'sticky' && "shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)] border-r border-zinc-800 group-hover:bg-[#18181b]")}>
+                                                <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5", stickyClass)}>
                                                     {val ? (
                                                         <div className="w-10 h-10 rounded overflow-hidden bg-zinc-800 cursor-zoom-in border border-zinc-700 hover:border-indigo-500/50 transition-colors" onClick={() => setPreviewImage(val)}>
                                                             <img src={val} alt="Ad Preview" className="w-full h-full object-cover" />
@@ -1330,17 +1442,17 @@ const App: React.FC = () => {
                                         }
 
                                         if (colId === 'platform') {
-                                            return <td key={colId} style={stickyStyle} className="px-4 py-2.5">{val === 'meta' ? <div className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-blue-500" /><span className="text-zinc-300 text-xs">Meta</span></div> : <div className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-orange-500" /><span className="text-zinc-300 text-xs">Google</span></div>}</td>;
+                                            return <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5", stickyClass)}>{val === 'meta' ? <div className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-blue-500" /><span className="text-zinc-300 text-xs">Meta</span></div> : <div className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-orange-500" /><span className="text-zinc-300 text-xs">Google</span></div>}</td>;
                                         }
                                         if (colId === 'status') {
-                                            return <td key={colId} style={stickyStyle} className="px-4 py-2.5"><Badge variant="outline" className={cn("border-0 px-1.5 py-0.5 rounded text-[10px]", (val === 'Active' || val === 'enabled' || val === 'active' || val === '進行中' || val === '審查中') ? "bg-emerald-500/10 text-emerald-400" : "bg-zinc-800 text-zinc-500")}>{val}</Badge></td>;
+                                            return <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5", stickyClass)}><Badge variant="outline" className={cn("border-0 px-1.5 py-0.5 rounded text-[10px]", (val === 'Active' || val === 'enabled' || val === 'active' || val === '進行中' || val === '審查中') ? "bg-emerald-500/10 text-emerald-400" : "bg-zinc-800 text-zinc-500")}>{val}</Badge></td>;
                                         }
                                         if (colId === 'name') {
-                                            return <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5 max-w-[300px] truncate text-zinc-300 group-hover:text-zinc-100 font-medium", stickyStyle.position === 'sticky' && "shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)] border-r border-zinc-800 group-hover:bg-[#18181b]")} title={val}>{val}</td>;
+                                            return <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5 max-w-[300px] truncate text-zinc-300 group-hover:text-zinc-100 font-medium", stickyClass)} title={val}>{val}</td>;
                                         }
                                         
                                         if (colId === 'budget') {
-                                             return <td key={colId} style={stickyStyle} className="px-4 py-2.5 text-zinc-400 tabular-nums">
+                                             return <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5 text-zinc-400 tabular-nums", stickyClass)}>
                                                  {(val === 0 && row.budgetType === 'ABO') ? (
                                                      <span className="text-xs text-zinc-500">使用廣告組合預算</span>
                                                  ) : (
@@ -1352,10 +1464,13 @@ const App: React.FC = () => {
                                         // --- CUSTOM RENDERING FOR RESULTS & COST PER RESULT ---
                                         if (colId === 'conversions') {
                                             return (
-                                                <td key={colId} className="px-4 py-2.5 text-right">
+                                                <td key={colId} className="px-4 py-2.5 text-right cursor-pointer hover:bg-zinc-800/50 transition-colors rounded-sm" onClick={() => setSelectedDebugRow(row)} title="點擊檢視原始數據 (Debug)">
                                                     <div className="flex flex-col items-end">
                                                         <span className="text-zinc-200 font-medium border-b border-dotted border-zinc-600 mb-0.5 pb-0.5 leading-none">{val > 0 ? val.toLocaleString() : '-'}</span>
-                                                        <span className="text-[10px] text-zinc-500">{row.resultType || '成果'}</span>
+                                                        <span className="text-[10px] text-zinc-500 flex items-center gap-0.5">
+                                                            {row.resultType || '成果'}
+                                                            <Code size={8} className="text-zinc-600"/>
+                                                        </span>
                                                     </div>
                                                 </td>
                                             )
