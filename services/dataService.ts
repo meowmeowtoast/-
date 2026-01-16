@@ -68,7 +68,8 @@ const detectCurrency = (headers: string[]): string => {
         if (h.includes('NT$')) return 'TWD';
         if (h.includes('HK$')) return 'HKD';
     }
-    return 'USD'; 
+    // Update: Default to TWD for this user base if not detected
+    return 'TWD'; 
 };
 
 // Helper: Find Image URL
@@ -122,7 +123,7 @@ export const parseCSV = (file: File): Promise<{ rows: AdRow[], currency: string 
       skipEmptyLines: true,
       complete: (results) => {
         const data = results.data as any[];
-        if (data.length === 0) return resolve({ rows: [], currency: 'USD' });
+        if (data.length === 0) return resolve({ rows: [], currency: 'TWD' });
         
         const headers = results.meta.fields || [];
         const platform = detectPlatform(headers);

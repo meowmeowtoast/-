@@ -1,14 +1,15 @@
 
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Upload, Download, Settings, RefreshCw, Layers, Plus, Trash2, Sparkles, 
   Folder, FileText, MoreHorizontal, Edit2, Search, X, ChevronRight, GripVertical, Filter,
   PanelLeftClose, HelpCircle, FileQuestion, ImageIcon, ExternalLink, Facebook, Calendar, Link,
-  Users, Key, ArrowUpDown, ChevronUp, ChevronDown, AlertTriangle, FileSpreadsheet, Code, Check
+  Users, Key, ArrowUpDown, ChevronUp, ChevronDown, AlertTriangle, FileSpreadsheet, Code, Check, Globe, ThumbsUp, MessageCircle, Share2
 } from 'lucide-react';
 import { parseCSV, exportToExcel } from './services/dataService';
 import { generateInsights } from './services/geminiService';
-import { fetchAdAccounts, fetchMetaAdsData } from './services/metaApiService';
+import { fetchAdAccounts, fetchMetaAdsData, fetchAdPreviewHtml } from './services/metaApiService';
 import { AdRow, ColumnDef, Preset, Level, Project, StoredToken } from './types';
 import { Button, Card, Badge, Input, Checkbox, cn, Dialog, ToastContainer, ToastMessage, Label, Select } from './components/LinearUI';
 import { DateRangePicker } from './components/DateRangePicker';
@@ -22,6 +23,10 @@ const DEV_TOKEN = "EAAMzntvPNkYBQYkB4xZBjMJFdVgCW3YcAZASWIaZBgspy0oaVWFvwgR3Wfsi
 const formatVal = (val: any, type: string | undefined, currency: string = 'USD') => {
   if (val === undefined || val === null) return '-';
   if (type === 'currency') {
+    // Explicit fix for TWD to ensure NT$ is shown clearly and without decimals
+    if (currency === 'TWD') {
+        return new Intl.NumberFormat('zh-TW', { style: 'currency', currency: 'TWD', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(val).replace('TWD', 'NT$');
+    }
     return new Intl.NumberFormat('en-US', { style: 'currency', currency, minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(val);
   }
   if (type === 'percent') {
@@ -307,7 +312,11 @@ const App: React.FC = () => {
   const prevDateRangeRef = useRef(dateRange);
 
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
-  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  
+  // Preview States
+  const [previewAd, setPreviewAd] = useState<AdRow | null>(null);
+  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState(false);
 
   const [activePresetId, setActivePresetId] = useState<string>('campaign_report');
   const [customPresets, setCustomPresets] = useState<Preset[]>([]);
@@ -318,6 +327,7 @@ const App: React.FC = () => {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<string | null>(null);
 
+  // ... (preset logic remains the same) ...
   const applyPreset = (presetId: string) => {
     // Check default presets
     const def = DEFAULT_PRESETS.find(p => p.id === presetId);
@@ -377,6 +387,29 @@ const App: React.FC = () => {
       setSortConfig(null);
   }, [activeTab]);
 
+  const activeProject = useMemo(() => 
+    projects.find(p => p.id === activeProjectId), 
+    [projects, activeProjectId]
+  );
+
+  useEffect(() => {
+    // Reset preview state when modal closes
+    if (!previewAd) {
+        setPreviewHtml(null);
+        setIsPreviewLoading(false);
+    } else {
+        // Auto-fetch preview if connected to Meta API
+        if (activeProject?.metaConfig && previewAd.originalId) {
+            setIsPreviewLoading(true);
+            fetchAdPreviewHtml(previewAd.originalId, activeProject.metaConfig.token)
+                .then((html) => {
+                    if (html) setPreviewHtml(html);
+                })
+                .finally(() => setIsPreviewLoading(false));
+        }
+    }
+  }, [previewAd, activeProject]);
+
   useEffect(() => {
     if (!isResizing) return;
     const handleMouseMove = (e: MouseEvent) => {
@@ -396,11 +429,6 @@ const App: React.FC = () => {
       document.removeEventListener('mouseup', handleMouseUp);
     };
   }, [isResizing]);
-
-  const activeProject = useMemo(() => 
-    projects.find(p => p.id === activeProjectId), 
-    [projects, activeProjectId]
-  );
 
   useEffect(() => {
       const isDateChanged = 
@@ -423,7 +451,7 @@ const App: React.FC = () => {
   };
   const removeToast = (id: string) => setToasts(prev => prev.filter(t => t.id !== id));
 
-  // Shared Logic for calculating total row from a dataset
+  // ... (Calculate Total Row, Aggregated Data, Export logic identical to previous file) ...
   const calculateTotalRow = (rows: AdRow[], label: string = "總計") => {
       if (rows.length === 0) return null;
       
@@ -439,24 +467,19 @@ const App: React.FC = () => {
           conversionValue: acc.conversionValue + row.conversionValue,
           newMessagingConnections: acc.newMessagingConnections + row.newMessagingConnections,
           messagingConversationsStarted: acc.messagingConversationsStarted + row.messagingConversationsStarted,
-          conversions: acc.conversions + (row.conversions || 0), // Use simplistic sum for export, though UI hides it
+          conversions: acc.conversions + (row.conversions || 0), 
       }), {
           impressions: 0, clicks: 0, spend: 0, reach: 0, linkClicks: 0, 
           websitePurchases: 0, videoViews: 0, landingPageViews: 0, 
           conversionValue: 0, newMessagingConnections: 0, messagingConversationsStarted: 0, conversions: 0
       });
 
-      // Special Logic for Mixed Results: if rows have different result types, generic sum is misleading
-      const resultTypes = new Set(rows.map(r => r.resultType));
-      const isMixedResults = resultTypes.size > 1;
-
       return {
           id: 'total_row',
           name: label,
-          campaignName: label, // ensure label appears if campaignName is first column
-          isTotal: true, // Marker for export styling
+          campaignName: label,
+          isTotal: true,
           ...sums,
-          // Ratios
           ctr: sums.impressions ? (sums.clicks / sums.impressions) * 100 : 0,
           cpc: sums.clicks ? sums.spend / sums.clicks : 0,
           linkCtr: sums.impressions ? (sums.linkClicks / sums.impressions) * 100 : 0,
@@ -465,12 +488,9 @@ const App: React.FC = () => {
           frequency: sums.reach ? sums.impressions / sums.reach : 0,
           roas: sums.spend ? sums.conversionValue / sums.spend : 0,
           costPerNewMessagingConnection: sums.newMessagingConnections ? sums.spend / sums.newMessagingConnections : 0,
-          
-          // Result Rate Calculation (Conversions / Impressions) * 100
-          conversions: sums.conversions, // Keep total count
+          conversions: sums.conversions,
           costPerResult: sums.conversions ? sums.spend / sums.conversions : 0,
           cpa: sums.conversions ? sums.spend / sums.conversions : 0, 
-          // Definition: "Result Rate"
           conversionRate: sums.impressions ? (sums.conversions / sums.impressions) * 100 : 0,
           costPerPageEngagement: -1,
       };
@@ -517,7 +537,6 @@ const App: React.FC = () => {
     
     addToast("正在準備 Excel 報表...", 'info');
     
-    // Calculate Days duration
     const startDate = new Date(dateRange.start);
     const endDate = new Date(dateRange.end);
     const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
@@ -531,17 +550,13 @@ const App: React.FC = () => {
         const typeConfig = EXPORT_TYPES.find(t => t.id === typeId);
         if (!typeConfig) return null;
 
-        // 1. Data Selection
         let dataToExport: any[] = [];
         let totalRow: any = null;
         
         if (typeId === 'age' || typeId === 'gender') {
-            // Use aggregation logic
             dataToExport = getAggregatedData(activeProject.data, typeId as any);
-            // Calculate total for demographics
             totalRow = calculateTotalRow(dataToExport, "總計");
         } else {
-            // Standard levels
             if (typeId === 'yangyu') {
                dataToExport = activeProject.data.filter(r => r.level === 'campaign');
             } else if (typeId === 'creative') {
@@ -549,16 +564,13 @@ const App: React.FC = () => {
             } else {
                dataToExport = activeProject.data.filter(r => r.level === typeConfig.level);
             }
-            // Calculate total based on the filtered set
             totalRow = calculateTotalRow(dataToExport, "總計");
         }
 
-        // Prepend Total Row if exists
         if (totalRow) {
             dataToExport = [totalRow, ...dataToExport];
         }
 
-        // 2. Column Selection
         let columnsToExport: string[] = [];
         let columnDefs = AVAILABLE_COLUMNS; 
 
@@ -752,7 +764,7 @@ const App: React.FC = () => {
       }
   };
 
-  // Other Actions
+  // ... (Other handlers identical) ...
   const createProject = () => { 
     const newProject: Project = { id: crypto.randomUUID(), name: "未命名專案", data: [], createdAt: Date.now(), updatedAt: Date.now() };
     setProjects(prev => [newProject, ...prev]);
@@ -828,13 +840,15 @@ const App: React.FC = () => {
       let left = 0;
       if (colId === 'imageUrl') { if (visibleColumns.includes('campaignName')) left += 200; } 
       else if (colId === 'name') { if (visibleColumns.includes('campaignName')) left += 200; if (visibleColumns.includes('imageUrl')) left += 80; }
+      
       const isLastSticky = (colId === 'name') || (colId === 'imageUrl' && !visibleColumns.includes('name')) || (colId === 'campaignName' && !visibleColumns.includes('imageUrl') && !visibleColumns.includes('name'));
+      
       return {
           position: 'sticky',
           left: `${left}px`,
           zIndex: isHeader ? 30 : 20,
-          boxShadow: isLastSticky ? '2px 0 5px -2px rgba(0,0,0,0.5)' : 'none',
-          backgroundColor: isHeader ? '#18181b' : '#09090b', 
+          borderRight: isLastSticky ? '1px solid #27272a' : 'none', 
+          // Note: Background color is handled via Tailwind classes in the render loop to support hover states
       } as React.CSSProperties;
   };
 
@@ -899,9 +913,137 @@ const App: React.FC = () => {
     <div className="flex h-screen bg-[#09090b] text-zinc-300 font-sans overflow-hidden selection:bg-indigo-500/30">
       <ToastContainer toasts={toasts} removeToast={removeToast} />
       {/* Dialogs... */}
-      <Dialog isOpen={!!previewImage} onClose={() => setPreviewImage(null)} title="素材預覽">
-         <div className="flex items-center justify-center bg-zinc-950/50 rounded-lg p-2 overflow-hidden">
-             {previewImage && <img src={previewImage} alt="Preview" className="max-w-full max-h-[80vh] object-contain rounded-md" />}
+      {/* --- NEW PREVIEW DIALOG --- */}
+      <Dialog isOpen={!!previewAd} onClose={() => setPreviewAd(null)} title="廣告素材預覽 (模擬)">
+         <div className="flex justify-center bg-zinc-950/80 rounded-lg p-0">
+             {previewAd && (
+                 <div className="w-full max-w-[500px] bg-[#242526] rounded-md overflow-hidden flex flex-col shadow-lg border border-zinc-700/50 my-2">
+                     {/* Show Real Iframe if available, else show simulated skeleton */}
+                     {previewHtml ? (
+                         <div className="w-full h-full bg-white relative">
+                             <div className="absolute top-0 left-0 w-full h-full z-10 pointer-events-none bg-transparent" /> {/* Overlay to prevent iframe hijacking clicks if needed */}
+                             <iframe 
+                                title="Ad Preview"
+                                srcDoc={previewHtml}
+                                className="w-full border-none"
+                                style={{ height: '70vh', minHeight: '500px' }}
+                                sandbox="allow-scripts allow-same-origin"
+                             />
+                         </div>
+                     ) : (
+                        <>
+                            {isPreviewLoading && (
+                                <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm text-white">
+                                    <RefreshCw className="animate-spin mb-2" size={32} />
+                                    <span className="text-sm font-medium">載入 Meta 真實預覽中...</span>
+                                </div>
+                            )}
+                            {/* 1. Header (Real Page Info) */}
+                            <div className="p-3 flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-10 h-10 rounded-full bg-zinc-600 flex items-center justify-center overflow-hidden border border-zinc-700">
+                                        {previewAd.creative?.pageId ? (
+                                            <img 
+                                                src={`https://graph.facebook.com/${previewAd.creative.pageId}/picture?type=normal`} 
+                                                alt="Page Profile" 
+                                                className="w-full h-full object-cover"
+                                                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }} 
+                                            />
+                                        ) : (
+                                            <Users className="text-zinc-400" size={24} />
+                                        )}
+                                    </div>
+                                    <div>
+                                        <div className="text-[15px] font-semibold text-[#e4e6eb] leading-tight">
+                                            {activeProject?.metaConfig?.accountName || "粉絲專頁名稱"}
+                                        </div>
+                                        <div className="text-xs text-[#b0b3b8] flex items-center gap-1 mt-0.5">
+                                            <span>贊助</span>
+                                            <span className="text-[10px]">•</span>
+                                            <Globe size={10} />
+                                        </div>
+                                    </div>
+                                </div>
+                                <MoreHorizontal className="text-[#b0b3b8]" />
+                            </div>
+
+                            {/* 2. Primary Text (Body) */}
+                            <div className="px-3 pb-3 text-[15px] text-[#e4e6eb] whitespace-pre-wrap leading-relaxed">
+                                {previewAd.creative?.body || <span className="text-zinc-500 italic text-xs">(無正文)</span>}
+                            </div>
+
+                            {/* 3. Media (Image/Video) */}
+                            <div className="w-full bg-black relative flex items-center justify-center min-h-[200px] border-y border-zinc-800">
+                                {previewAd.creative?.imageUrl ? (
+                                    <img src={previewAd.creative.imageUrl} alt="Ad Media" className="w-full object-contain max-h-[50vh]" />
+                                ) : (
+                                    <div className="flex flex-col items-center gap-2 py-10">
+                                        <ImageIcon className="text-zinc-600" size={48} />
+                                        <span className="text-zinc-500 text-sm">無預覽圖片</span>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* 4. CTA Bar */}
+                            <div className="bg-[#3a3b3c] p-3 flex items-center justify-between">
+                                <div className="flex-1 min-w-0 pr-4">
+                                    <div className="text-xs text-[#b0b3b8] uppercase truncate">{previewAd.creative?.displayLink || "FACEBOOK.COM"}</div>
+                                    <div className="text-[16px] font-bold text-[#e4e6eb] leading-tight line-clamp-2">
+                                        {previewAd.creative?.title || <span className="text-zinc-500 italic font-normal text-xs">(無標題)</span>}
+                                    </div>
+                                    {previewAd.creative?.linkDescription && (
+                                        <div className="text-sm text-[#b0b3b8] line-clamp-1 mt-0.5">{previewAd.creative.linkDescription}</div>
+                                    )}
+                                </div>
+                                {previewAd.creative?.callToAction && (
+                                    <button className="bg-[#4b4c4f] hover:bg-[#5c5d60] text-[#e4e6eb] px-4 py-2 rounded-md font-semibold text-[15px] whitespace-nowrap transition-colors border border-zinc-600">
+                                        {previewAd.creative.callToAction}
+                                    </button>
+                                )}
+                            </div>
+                            
+                            {/* 5. Engagement Stats (Real Data if available) */}
+                            <div className="px-3 py-2 flex items-center justify-between border-b border-[#3e4042]">
+                                <div className="flex items-center gap-1 text-[#b0b3b8] text-sm">
+                                    <div className="w-4 h-4 bg-[#1877f2] rounded-full flex items-center justify-center">
+                                        <ThumbsUp size={10} className="text-white fill-white" />
+                                    </div>
+                                    <span>{(previewAd.rawActions?.find((a:any) => a.action_type === 'post_reaction' || a.action_type === 'like')?.value || 0)}</span>
+                                </div>
+                                <div className="flex gap-3 text-[#b0b3b8] text-sm">
+                                    <span>{(previewAd.rawActions?.find((a:any) => a.action_type === 'comment')?.value || 0)} 則留言</span>
+                                    <span>{(previewAd.rawActions?.find((a:any) => a.action_type === 'share')?.value || 0)} 次分享</span>
+                                </div>
+                            </div>
+
+                            {/* 6. Action Buttons */}
+                            <div className="p-1 flex items-center justify-between">
+                                <div className="flex-1 flex justify-center py-2 hover:bg-[#3a3b3c] rounded cursor-pointer transition-colors text-[#b0b3b8] font-medium text-sm gap-2">
+                                    <ThumbsUp size={18} /> 讚
+                                </div>
+                                <div className="flex-1 flex justify-center py-2 hover:bg-[#3a3b3c] rounded cursor-pointer transition-colors text-[#b0b3b8] font-medium text-sm gap-2">
+                                    <MessageCircle size={18} /> 留言
+                                </div>
+                                <div className="flex-1 flex justify-center py-2 hover:bg-[#3a3b3c] rounded cursor-pointer transition-colors text-[#b0b3b8] font-medium text-sm gap-2">
+                                    <Share2 size={18} /> 分享
+                                </div>
+                            </div>
+                            
+                            {/* Footer Info */}
+                            <div className="bg-[#18191a] p-2 text-center border-t border-zinc-800">
+                                <Button 
+                                    variant="secondary" 
+                                    size="sm" 
+                                    className="text-xs w-full gap-2 border-zinc-700 hover:bg-zinc-800"
+                                    onClick={() => window.open(`https://facebook.com/ads/library/?id=${previewAd.originalId}`, '_blank')}
+                                >
+                                    <ExternalLink size={12} /> 在廣告檔案庫查看詳細資料
+                                </Button>
+                            </div>
+                        </>
+                     )}
+                 </div>
+             )}
          </div>
       </Dialog>
       <Dialog isOpen={isExportDialogOpen} onClose={() => setIsExportDialogOpen(false)} title="下載報表設定">
@@ -1001,7 +1143,7 @@ const App: React.FC = () => {
           </div>
       </Dialog>
       <Dialog isOpen={isMetaModalOpen} onClose={() => setIsMetaModalOpen(false)} title="連結 Meta 廣告帳號">
-         <div className="space-y-6">
+         <div className="space-y-6 p-6">
              <div className="space-y-3">
                  <div className="flex justify-between items-center"><Label>1. 選擇或輸入 Access Token</Label><button onClick={() => setIsTokenManagerOpen(true)} className="text-[10px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1"><Settings size={10}/> 管理 Token</button></div>
                  {storedTokens.length > 0 && (<Select value={selectedTokenId} onChange={(e) => { setSelectedTokenId(e.target.value); setMetaToken(""); }} className="mb-2"><option value="">-- 直接輸入 Token --</option>{storedTokens.map(t => <option key={t.id} value={t.id}>{t.alias}</option>)}</Select>)}
@@ -1079,7 +1221,7 @@ const App: React.FC = () => {
                                 const isSorted = sortConfig?.key === colId;
                                 const stickyStyle = getStickyStyle(colId, true);
                                 const alignClass = (def?.type === 'number' || def?.type === 'currency' || def?.type === 'percent') ? 'text-right' : 'text-left';
-                                return (<th key={colId} onClick={() => requestSort(colId)} style={stickyStyle} className={cn("px-4 py-3 font-medium text-zinc-500 text-xs uppercase tracking-wider cursor-pointer hover:text-zinc-300 transition-colors select-none group", alignClass, stickyStyle.position === 'sticky' ? "border-r-0" : "")}><div className={cn("flex items-center gap-1", alignClass === 'text-right' && "justify-end")}>{def?.label}<span className="text-zinc-600 group-hover:text-zinc-500">{isSorted ? (sortConfig.direction === 'asc' ? <ChevronUp size={12}/> : <ChevronDown size={12}/>) : (<ArrowUpDown size={12} className="opacity-0 group-hover:opacity-100 transition-opacity" />)}</span></div></th>);
+                                return (<th key={colId} onClick={() => requestSort(colId)} style={stickyStyle} className={cn("px-4 py-3 font-medium text-zinc-500 text-xs uppercase tracking-wider cursor-pointer hover:text-zinc-300 transition-colors select-none group", alignClass, stickyStyle.position === 'sticky' ? "border-r-0 bg-[#18181b]" : "")}><div className={cn("flex items-center gap-1", alignClass === 'text-right' && "justify-end")}>{def?.label}<span className="text-zinc-600 group-hover:text-zinc-500">{isSorted ? (sortConfig.direction === 'asc' ? <ChevronUp size={12}/> : <ChevronDown size={12}/>) : (<ArrowUpDown size={12} className="opacity-0 group-hover:opacity-100 transition-opacity" />)}</span></div></th>);
                                 })}
                             </tr>
                             </thead>
@@ -1093,11 +1235,11 @@ const App: React.FC = () => {
                                         const def = AVAILABLE_COLUMNS.find(c => c.id === colId);
                                         const val = row[colId];
                                         const stickyStyle = getStickyStyle(colId, false);
-                                        const stickyClass = stickyStyle.position === 'sticky' ? "border-r-0 group-hover:bg-[#18181b]" : "";
+                                        const stickyClass = stickyStyle.position === 'sticky' ? "border-r-0 bg-[#09090b] group-hover:bg-[#27272a] transition-colors duration-150" : "";
                                         const alignClass = (def?.type === 'number' || def?.type === 'currency' || def?.type === 'percent') ? 'text-right' : 'text-left';
                                         
                                         if (colId === 'campaignName') return (<td key={colId} style={stickyStyle} className={cn("px-4 py-2.5 max-w-[200px] truncate text-zinc-300 font-medium", stickyClass)}>{!isSameCampaign && <span title={val} className="text-indigo-300">{val}</span>}</td>);
-                                        if (colId === 'imageUrl') return (<td key={colId} style={stickyStyle} className={cn("px-4 py-2.5", stickyClass)}>{val ? (<div className="w-10 h-10 rounded overflow-hidden bg-zinc-800 cursor-zoom-in border border-zinc-700 hover:border-indigo-500/50 transition-colors" onClick={() => setPreviewImage(val)}><img src={val} alt="Ad Preview" className="w-full h-full object-cover" /></div>) : (<div className="w-10 h-10 rounded bg-zinc-800/50 flex items-center justify-center text-zinc-600"><ImageIcon size={14} /></div>)}</td>);
+                                        if (colId === 'imageUrl') return (<td key={colId} style={stickyStyle} className={cn("px-4 py-2.5", stickyClass)}>{val ? (<div className="w-10 h-10 rounded overflow-hidden bg-zinc-800 cursor-zoom-in border border-zinc-700 hover:border-indigo-500/50 transition-colors" onClick={() => setPreviewAd(row)}><img src={val} alt="Ad Preview" className="w-full h-full object-cover" /></div>) : (<div className="w-10 h-10 rounded bg-zinc-800/50 flex items-center justify-center text-zinc-600"><ImageIcon size={14} /></div>)}</td>);
                                         if (colId === 'platform') return <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5", stickyClass)}>{val === 'meta' ? <div className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-blue-500" /><span className="text-zinc-300 text-xs">Meta</span></div> : <div className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-orange-500" /><span className="text-zinc-300 text-xs">Google</span></div>}</td>;
                                         if (colId === 'status') return <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5", stickyClass)}><Badge variant="outline" className={cn("border-0 px-1.5 py-0.5 rounded text-[10px]", (val === 'Active' || val === 'enabled' || val === 'active' || val === '進行中' || val === '審查中') ? "bg-emerald-500/10 text-emerald-400" : "bg-zinc-800 text-zinc-500")}>{val}</Badge></td>;
                                         if (colId === 'name') return <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5 max-w-[300px] truncate text-zinc-300 group-hover:text-zinc-100 font-medium", stickyClass)} title={val}>{val}</td>;

@@ -2,6 +2,18 @@
 export type Platform = 'meta' | 'google' | 'unknown';
 export type Level = 'campaign' | 'adset' | 'ad' | 'creative' | 'age' | 'gender' | 'demographics';
 
+export interface AdCreativeDetails {
+  title?: string;       // Headline (標題)
+  body?: string;        // Primary Text (正文)
+  linkDescription?: string; // Link description (連結描述)
+  displayLink?: string; // Display URL
+  callToAction?: string; // Learn More, Shop Now, etc.
+  imageUrl?: string;
+  thumbnailUrl?: string;
+  pageName?: string;    // If available via creative
+  pageId?: string;      // Actor ID / Page ID for profile pic
+}
+
 export interface AdRow {
   id: string;
   originalId?: string; // ID from the platform
@@ -57,6 +69,7 @@ export interface AdRow {
   campaignName?: string;
   adGroupName?: string; // Ad Set for Meta
   imageUrl?: string; // For creative preview
+  creative?: AdCreativeDetails; // Structured creative data for preview
   
   // Debug Data
   objective?: string;

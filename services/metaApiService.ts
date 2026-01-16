@@ -1,5 +1,5 @@
 
-import { AdRow } from '../types';
+import { AdRow, AdCreativeDetails } from '../types';
 
 const API_VERSION = 'v22.0';
 const BASE_URL = `https://graph.facebook.com/${API_VERSION}`;
@@ -66,9 +66,23 @@ export const fetchAdAccounts = async (token: string): Promise<MetaAccount[]> => 
   return data.data || [];
 };
 
-// --- ADVANCED LOGIC CONSTANTS (Ported from Python Script) ---
+// --- NEW: Fetch Real Ad Preview HTML ---
+export const fetchAdPreviewHtml = async (adId: string, token: string): Promise<string | null> => {
+    const url = `${BASE_URL}/${adId}/previews?ad_format=MOBILE_FEED_STANDARD&access_token=${token}`;
+    try {
+        const data = await fetchWithRetry(url);
+        if (data.data && data.data.length > 0) {
+            return data.data[0].body; // The <iframe> string
+        }
+        return null;
+    } catch (e) {
+        console.error("Failed to fetch ad preview", e);
+        return null;
+    }
+};
 
-// 權重：用於當數值接近時，優先選擇高價值的動作
+// --- ADVANCED LOGIC CONSTANTS ---
+
 const ACTION_WEIGHTS: Record<string, number> = {
     'purchase': 10.0,
     'offsite_conversion.fb_pixel_purchase': 10.0,
@@ -76,45 +90,39 @@ const ACTION_WEIGHTS: Record<string, number> = {
     'lead': 5.0,
     'on_facebook_lead': 5.0,
     'offsite_conversion.lead': 5.0,
-    'onsite_conversion.messaging_conversation_started_7d': 4.0, // 訊息對話優先
+    'onsite_conversion.messaging_conversation_started_7d': 4.0, 
     'onsite_conversion.messaging_first_reply': 4.0,
-    'onsite_conversion.messaging_connection': 3.5, // 訊息聯繫次之
+    'onsite_conversion.messaging_connection': 3.5, 
     'messaging_connection': 3.5, 
-    'video_thruplay_watched_actions': 2.0, // ThruPlay
-    'video_view': 1.8, // 3-Sec View
+    'video_thruplay_watched_actions': 2.0, 
+    'video_view': 1.8, 
     'omni_landing_page_view': 1.5,
     'landing_page_view': 1.5,
     'link_click': 1.2,
-    'post_engagement': 0.1, // 互動權重極低
+    'post_engagement': 0.1, 
     'page_engagement': 0.1,
     'like': 0.1
 };
 
-// 關鍵字對應的指標清單
 const KEYWORD_MAPPING: Record<string, string[]> = {
     'video': ['video_thruplay_watched_actions', 'video_view', 'video_p75_watched_actions'],
     '影片': ['video_thruplay_watched_actions', 'video_view', 'video_p75_watched_actions'],
     '觀影': ['video_thruplay_watched_actions', 'video_view', 'video_p75_watched_actions'],
     'thruplay': ['video_thruplay_watched_actions'],
-    
     'message': ['onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_first_reply', 'onsite_conversion.messaging_connection', 'messaging_connection'],
     'messaging': ['onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_first_reply', 'onsite_conversion.messaging_connection', 'messaging_connection'],
     '訊息': ['onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_first_reply', 'onsite_conversion.messaging_connection', 'messaging_connection'],
     '對話': ['onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_first_reply', 'onsite_conversion.messaging_connection', 'messaging_connection'],
-    
     'traffic': ['omni_landing_page_view', 'landing_page_view', 'link_click'],
     '流量': ['omni_landing_page_view', 'landing_page_view', 'link_click'],
     'lp': ['omni_landing_page_view', 'landing_page_view'],
-    
     'lead': ['on_facebook_lead', 'lead', 'offsite_conversion.lead'],
     '名單': ['on_facebook_lead', 'lead', 'offsite_conversion.lead'],
-    
     'purchase': ['offsite_conversion.fb_pixel_purchase', 'purchase', 'omni_purchase'],
     '購買': ['offsite_conversion.fb_pixel_purchase', 'purchase', 'omni_purchase'],
     '轉換': ['offsite_conversion.fb_pixel_purchase', 'purchase', 'omni_purchase'],
 };
 
-// Optimization Goal Mapping (Fallback/Reference)
 const GOAL_TO_ACTION_MAP: Record<string, string[]> = {
     'THRUPLAY': ['video_thruplay_watched_actions'],
     'VIDEO_VIEWS': ['video_view'],
@@ -128,7 +136,6 @@ const GOAL_TO_ACTION_MAP: Record<string, string[]> = {
     'VALUE': ['purchase', 'omni_purchase']
 };
 
-// Action Type 轉中文標籤
 const getActionLabel = (type: string): string => {
     if (!type) return '成果';
     if (type.includes('thruplay')) return 'ThruPlay';
@@ -146,15 +153,12 @@ const getActionLabel = (type: string): string => {
     return type;
 };
 
-// --- CORE LOGIC FUNCTIONS ---
-
 const getActionValue = (actions: any[], actionType: string): number => {
     if (!actions || actions.length === 0) return 0;
     const action = actions.find((a: any) => a.action_type === actionType);
     return action ? parseFloat(action.value) : 0;
 };
 
-// 決定「主要成果」 (Python Logic Port)
 const getPrimaryResult = (
     item: any, 
     optGoal: string | undefined, 
@@ -164,12 +168,10 @@ const getPrimaryResult = (
     const name = (item.ad_name || item.adset_name || item.campaign_name || '').toLowerCase();
     const objUpper = (objective || '').toUpperCase();
 
-    // 0. 前處理：轉成 Dict，濾除極低數值噪音，保留高價值指標
     const actionDict: Record<string, number> = {};
     for (const act of rawActions) {
         const val = parseFloat(act.value);
         const atype = act.action_type;
-        // 高價值指標保留所有數值，其他指標需 > 3 避免噪音
         if (['purchase', 'offsite_conversion.fb_pixel_purchase', 'omni_purchase', 'onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_connection', 'messaging_connection'].includes(atype)) {
              if (val > 0) actionDict[atype] = val;
         } else if (val > 3) {
@@ -177,7 +179,6 @@ const getPrimaryResult = (
         }
     }
 
-    // Special Case: Reach/Impressions Goals usually have no actions
     if (optGoal === 'REACH' && !actionDict['reach']) return { value: parseFloat(item.reach || 0), actionType: 'reach', label: '觸及人數', debugInfo: 'GOAL: REACH' };
     if (optGoal === 'IMPRESSIONS' && !actionDict['impressions']) return { value: parseFloat(item.impressions || 0), actionType: 'impressions', label: '曝光次數', debugInfo: 'GOAL: IMPRESSIONS' };
 
@@ -185,15 +186,11 @@ const getPrimaryResult = (
         return { value: 0, actionType: '', label: '成果', debugInfo: 'no valid actions' };
     }
 
-    // --- 1. 名稱關鍵字匹配 (Hybrid Logic with Goal Check) ---
-    // 如果名字包含關鍵字，我們會優先考慮該類別。
-    // 但在該類別中，如果有明確的 Optimization Goal，我們會優先選 Goal 對應的指標，而非盲目選最大值。
     let bestKeywordMatch: string | null = null;
     let maxKeywordVal = -1;
 
     for (const [kw, candidates] of Object.entries(KEYWORD_MAPPING)) {
         if (name.includes(kw)) {
-            // Check if one of the candidates MATCHES the Optimization Goal
             if (optGoal && GOAL_TO_ACTION_MAP[optGoal]) {
                 const goalTargets = GOAL_TO_ACTION_MAP[optGoal];
                 const matchingGoal = candidates.find(c => goalTargets.includes(c) && actionDict[c] > 0);
@@ -206,8 +203,6 @@ const getPrimaryResult = (
                     };
                 }
             }
-
-            // Fallback: Pick max value in candidates
             for (const cand of candidates) {
                 const val = actionDict[cand] || 0;
                 if (val > maxKeywordVal) {
@@ -227,8 +222,6 @@ const getPrimaryResult = (
         };
     }
 
-    // --- 2. Optimization Goal 輔助 (次優先) ---
-    // 如果 Goal 明確且有數值，且沒有被關鍵字覆蓋
     if (optGoal && GOAL_TO_ACTION_MAP[optGoal]) {
         for (const type of GOAL_TO_ACTION_MAP[optGoal]) {
             if (actionDict[type] > 0) {
@@ -242,12 +235,8 @@ const getPrimaryResult = (
         }
     }
 
-    // --- 3. Objective 強化邏輯 (針對 OUTCOME_ENGAGEMENT 模糊地帶) ---
     if (objUpper === 'OUTCOME_ENGAGEMENT' || objUpper === 'POST_ENGAGEMENT') {
-        // 比較 訊息 vs 影片 vs 互動，採用「加權分數」
         const candidates: string[] = [];
-        
-        // 收集候選人
         KEYWORD_MAPPING['message'].forEach(k => { if(actionDict[k]) candidates.push(k); });
         KEYWORD_MAPPING['video'].forEach(k => { if(actionDict[k]) candidates.push(k); });
         if (actionDict['post_engagement']) candidates.push('post_engagement');
@@ -275,7 +264,6 @@ const getPrimaryResult = (
         }
     }
 
-    // --- 4. Fallback: 全局權重最大者 ---
     let bestFallback: string | null = null;
     let maxFallbackScore = -1;
 
@@ -297,40 +285,113 @@ const getPrimaryResult = (
         };
     }
 
-    // 什麼都沒抓到
     return { value: 0, actionType: '', label: '成果', debugInfo: 'none' };
 };
 
-// 計算 CPA
 const calculateCPA = (item: any, actionType: string, resultValue: number): number => {
     if (resultValue <= 0) return 0;
-    
-    // 1. 嘗試從 API 直接取得 CPA (cost_per_action_type)
     if (item.cost_per_action_type && Array.isArray(item.cost_per_action_type)) {
         const cpaObj = item.cost_per_action_type.find((c: any) => c.action_type === actionType);
         if (cpaObj) {
             return parseFloat(cpaObj.value);
         }
     }
-
-    // 2. 手動計算 Fallback (花費 / 數量)
-    // 注意：這會使用總花費除以該動作數量，若該動作非唯一主要目標，數字可能偏高。
     const spend = parseFloat(item.spend || 0);
     return spend / resultValue;
 };
 
-// --- MAIN PROCESSING ---
+// --- CREATIVE PARSING LOGIC ---
 
-const getCreativeImageUrl = (creative: any): string | undefined => {
+const extractCreativeDetails = (creative: any): AdCreativeDetails | undefined => {
     if (!creative) return undefined;
-    if (creative.image_url) return creative.image_url;
-    if (creative.thumbnail_url) return creative.thumbnail_url;
+    
+    // Initialize vars
+    let imageUrl: string | undefined = undefined;
+    let thumbnailUrl = creative.thumbnail_url; // Fallback
+    let title = creative.title;
+    let body = creative.body;
+    let linkDescription = creative.link_description;
+    let callToAction = creative.call_to_action_type;
+    const pageId = creative.actor_id;
+
+    // 1. Prioritize Object Story Spec (Standard Ads & Video)
     const spec = creative.object_story_spec;
     if (spec) {
-        if (spec.link_data && spec.link_data.picture) return spec.link_data.picture;
-        if (spec.video_data && spec.video_data.image_url) return spec.video_data.image_url;
+        // Link Data
+        if (spec.link_data) {
+            const ld = spec.link_data;
+            // Handle Carousel (child_attachments)
+            if (ld.child_attachments && ld.child_attachments.length > 0) {
+                const firstChild = ld.child_attachments[0];
+                if (firstChild.picture) imageUrl = firstChild.picture;
+                // If main title/body is missing, grab from first child
+                if (!body) body = firstChild.description || firstChild.name; // Carousel usually puts text in name/description
+                if (!title) title = firstChild.name;
+            } else {
+                // Standard Single Image
+                if (ld.full_picture) imageUrl = ld.full_picture; // Highest Res
+                else if (ld.picture) imageUrl = ld.picture;
+            }
+
+            if (!body) body = ld.message;
+            if (!title) title = ld.name;
+            if (!linkDescription) linkDescription = ld.description;
+            if (ld.call_to_action) callToAction = ld.call_to_action.type;
+        } 
+        // Video Data
+        else if (spec.video_data) {
+             const vd = spec.video_data;
+             if (vd.image_url) imageUrl = vd.image_url; // Video Poster
+             if (!body) body = vd.message; 
+             if (!title) title = vd.title;
+             if (vd.call_to_action) callToAction = vd.call_to_action.type;
+        }
     }
-    return undefined;
+    
+    // 2. Fallback for Asset Feed (Dynamic Creative / DCO)
+    if (creative.asset_feed_spec) {
+        const afs = creative.asset_feed_spec;
+        
+        // Dynamic Images: check 'ad_images' or 'images'
+        if (!imageUrl) {
+            if (afs.images && afs.images.length > 0) imageUrl = afs.images[0].url;
+            else if (afs.ad_images && afs.ad_images.length > 0) imageUrl = afs.ad_images[0].url;
+        }
+        
+        // Dynamic Bodies (Text)
+        if (!body && afs.bodies && afs.bodies.length > 0) body = afs.bodies[0].text;
+        
+        // Dynamic Titles
+        if (!title && afs.titles && afs.titles.length > 0) title = afs.titles[0].text;
+        
+        // Dynamic Link Description
+        if (!linkDescription) {
+             if (afs.link_urls && afs.link_urls.length > 0) linkDescription = afs.link_urls[0].website_url;
+             else if (afs.descriptions && afs.descriptions.length > 0) linkDescription = afs.descriptions[0].text;
+        }
+    }
+
+    // 3. Last resort fallback to top-level properties
+    // IMPORTANT: Avoid thumbnail_url if possible as it might be a low-res logo.
+    if (!imageUrl) {
+        if (creative.image_url) imageUrl = creative.image_url;
+        else if (creative.thumbnail_url) imageUrl = creative.thumbnail_url;
+    }
+    
+    // Clean up CTA
+    if (callToAction) {
+        callToAction = callToAction.replace(/_/g, ' '); // LEARN_MORE -> LEARN MORE
+    }
+
+    return {
+        title,
+        body,
+        linkDescription,
+        callToAction,
+        imageUrl,
+        thumbnailUrl,
+        pageId
+    };
 };
 
 const mapStatus = (effectiveStatus: string, stopTime?: string): string => {
@@ -363,7 +424,7 @@ const getBudgetDivider = (currency: string): number => {
     return 100;
 };
 
-const calculateMetrics = (item: any, level: AdRow['level'], effectiveStatus: string, structInfo: any, currency: string, adImageMap?: Map<string, string>, extraProps: Partial<AdRow> = {}, objective?: string, optGoal?: string): AdRow => {
+const calculateMetrics = (item: any, level: AdRow['level'], effectiveStatus: string, structInfo: any, currency: string, adCreativeMap?: Map<string, any>, extraProps: Partial<AdRow> = {}, objective?: string, optGoal?: string): AdRow => {
     const actions = item.actions || [];
     const actionValues = item.action_values || [];
 
@@ -377,19 +438,15 @@ const calculateMetrics = (item: any, level: AdRow['level'], effectiveStatus: str
 
     const findVal = (type: string) => getActionValue(actions, type);
 
-    // Prioritize specific Pixel purchase over broad "Purchase" to avoid double counting if keys overlap in weird ways
     const websitePurchases = findVal('offsite_conversion.fb_pixel_purchase') || findVal('purchase') || findVal('omni_purchase');
     
-    const videoViews = findVal('video_view'); // 3-Second
+    const videoViews = findVal('video_view'); 
     const landingPageViews = findVal('landing_page_view') || findVal('omni_landing_page_view');
 
-    // --- Core Result & CPA Calculation ---
     const { value: conversions, actionType: resultActionType, label: resultType, debugInfo } = getPrimaryResult(item, optGoal, objective);
     
-    // Calculate Cost Per Result
     const costPerResult = calculateCPA(item, resultActionType, conversions);
 
-    // Conversion Value (ROAS Basis)
     const conversionValueObj = actionValues.find((a: any) => a.action_type === 'purchase') || actionValues.find((a: any) => a.action_type === 'omni_purchase');
     const conversionValue = conversionValueObj ? parseFloat(conversionValueObj.value) : 0;
 
@@ -398,35 +455,34 @@ const calculateMetrics = (item: any, level: AdRow['level'], effectiveStatus: str
     const linkCtr = impressions > 0 ? (linkClicks / impressions) * 100 : 0;
     const linkCpc = linkClicks > 0 ? spend / linkClicks : 0;
     
-    // Smart CPA Logic:
     let cpa = 0;
     if (websitePurchases > 0) {
         cpa = calculateCPA(item, 'purchase', websitePurchases);
     } else if (conversions > 0) {
-        cpa = costPerResult; // Fallback to Cost per Result
+        cpa = costPerResult; 
     }
     
-    // CVR (Conversion Rate) Logic Update:
-    // Problem: If "Results" = Video Views (1000) and Clicks = 50, CVR = 2000%.
-    // Fix: Only calculate CVR if the "Result" is actually a conversion event (Purchase, Lead, Message).
-    // Denominator should be Link Clicks, not all Clicks, to match standard web CVR definition.
-    
-    // 1. Identify if the 'Primary Result' is a conversion type
     const conversionMetricTypes = ['purchase', 'lead', 'messaging', 'schedule', 'contact', 'complete_registration', 'submit_application'];
     const isConversionType = conversionMetricTypes.some(k => resultActionType.toLowerCase().includes(k));
 
-    // 2. Numerator: Use conversions IF valid type, otherwise use hard count of purchases/leads only (ignore video views/traffic for CVR)
-    // Note: If resultType is "Link Clicks", this correctly prevents CVR from being 100% (LinkClicks / LinkClicks)
     const cvrNumerator = isConversionType ? conversions : websitePurchases;
-
-    // 3. Denominator: Link Clicks
     const cvrDenominator = linkClicks > 0 ? linkClicks : clicks;
-
     const conversionRate = cvrDenominator > 0 ? (cvrNumerator / cvrDenominator) * 100 : 0;
     
     const roas = spend > 0 ? conversionValue / spend : 0;
 
-    const imageUrl = adImageMap && item.ad_id ? adImageMap.get(item.ad_id) : undefined;
+    // Creative Data
+    let creative: AdCreativeDetails | undefined = undefined;
+    let imageUrl: string | undefined = undefined;
+
+    if (level === 'ad') {
+        const rawCreative = adCreativeMap && item.ad_id ? adCreativeMap.get(item.ad_id) : undefined;
+        if (rawCreative) {
+            creative = extractCreativeDetails(rawCreative);
+            imageUrl = creative?.imageUrl || creative?.thumbnailUrl;
+        }
+    }
+
     const finalStatus = mapStatus(effectiveStatus, structInfo?.stopTime || structInfo?.endTime);
 
     let budget = 0;
@@ -443,11 +499,8 @@ const calculateMetrics = (item: any, level: AdRow['level'], effectiveStatus: str
         budgetType = 'ABO'; 
     }
 
-    // Messaging Metrics
-    // Explicitly check both keys to ensure data capture
     const messagingConversationsStarted = findVal('onsite_conversion.messaging_conversation_started_7d');
     
-    // Check various keys for "Connections"
     let msgConnKey = 'onsite_conversion.messaging_connection';
     let newMessagingConnections = findVal(msgConnKey);
     if (!newMessagingConnections) {
@@ -455,7 +508,6 @@ const calculateMetrics = (item: any, level: AdRow['level'], effectiveStatus: str
         newMessagingConnections = findVal(msgConnKey);
     }
     
-    // Calculate cost using the SAME key we found the value with
     const costPerNewMessagingConnection = calculateCPA(item, msgConnKey, newMessagingConnections);
 
     const postEngagement = findVal('post_engagement');
@@ -483,10 +535,10 @@ const calculateMetrics = (item: any, level: AdRow['level'], effectiveStatus: str
         campaignName: item.campaign_name,
         adGroupName: item.adset_name,
         imageUrl,
+        creative, // Structured Data
         objective,
         rawActions: actions,
-        costPerActionType: item.cost_per_action_type || [], // Save for manual override fallback logic
-        // Debug Data
+        costPerActionType: item.cost_per_action_type || [], 
         primaryActionType: resultActionType, 
         debugInfo,
         ...extraProps
@@ -496,7 +548,6 @@ const calculateMetrics = (item: any, level: AdRow['level'], effectiveStatus: str
 export const fetchMetaAdsData = async (token: string, accountId: string, startDate: string, endDate: string, currency: string): Promise<AdRow[]> => {
   const timeRange = JSON.stringify({ since: startDate, until: endDate });
   
-  // 加入 cost_per_action_type 以取得精準 CPA
   const commonFields = 'campaign_name,adset_name,campaign_id,adset_id,impressions,clicks,spend,actions,action_values,cost_per_action_type,reach,inline_link_clicks,cpm,frequency';
   
   const params = new URLSearchParams({
@@ -504,8 +555,6 @@ export const fetchMetaAdsData = async (token: string, accountId: string, startDa
       limit: '500',
       access_token: token,
       use_unified_attribution_setting: 'true',
-      // 加入歸因視窗
-      // action_attribution_windows: '["1d_view","7d_click","28d_click"]' // 暫時註解，避免部分帳號權限不足錯誤，若有需要可開啟
   });
 
   const buildUrl = (level: string, extraFields: string = '') => {
@@ -519,10 +568,12 @@ export const fetchMetaAdsData = async (token: string, accountId: string, startDa
   const adsetInsightsUrl = buildUrl('adset');
   const adInsightsUrl = buildUrl('ad', ',ad_name,ad_id');
   
-  // Fetch Structure Data
   const campaignsUrl = `${BASE_URL}/act_${accountId}/campaigns?` + new URLSearchParams({ fields: 'name,effective_status,objective,stop_time,daily_budget,lifetime_budget', limit: '500', access_token: token });
   const adsetsUrl = `${BASE_URL}/act_${accountId}/adsets?` + new URLSearchParams({ fields: 'name,effective_status,end_time,campaign_id,daily_budget,lifetime_budget,optimization_goal', limit: '500', access_token: token });
-  const adsUrl = `${BASE_URL}/act_${accountId}/ads?` + new URLSearchParams({ fields: 'name,effective_status,creative{thumbnail_url,image_url,title,body,object_story_spec},adset_id', limit: '500', access_token: token });
+  
+  // Update: Fetch deep creative fields including actor_id for page info
+  // Added: child_attachments for Carousel
+  const adsUrl = `${BASE_URL}/act_${accountId}/ads?` + new URLSearchParams({ fields: 'name,effective_status,creative{actor_id,thumbnail_url,image_url,title,body,object_story_spec,link_url,call_to_action_type,asset_feed_spec},adset_id', limit: '500', access_token: token });
   
   const genderUrl = buildUrl('campaign') + '&breakdowns=gender';
   const ageUrl = buildUrl('campaign') + '&breakdowns=age';
@@ -553,13 +604,13 @@ export const fetchMetaAdsData = async (token: string, accountId: string, startDa
   });
 
   const adStatusMap = new Map<string, string>();
-  const adImageMap = new Map<string, string>();
+  const adCreativeMap = new Map<string, any>(); // Store the whole creative object
   const adParentMap = new Map<string, string>(); 
+
   (adStruct || []).forEach((ad: any) => {
       adStatusMap.set(ad.id, ad.effective_status);
       adParentMap.set(ad.id, ad.adset_id);
-      const imgUrl = getCreativeImageUrl(ad.creative);
-      if (imgUrl) adImageMap.set(ad.id, imgUrl);
+      if (ad.creative) adCreativeMap.set(ad.id, ad.creative);
   });
 
   const campaignRows = (campData || []).map((item: any) => {
@@ -578,7 +629,7 @@ export const fetchMetaAdsData = async (token: string, accountId: string, startDa
       const adSetId = item.adset_id || adParentMap.get(item.ad_id);
       const adSetInfo = adSetId ? adSetMap.get(adSetId) : undefined;
       const campInfo = campaignMap.get(item.campaign_id);
-      return calculateMetrics(item, 'ad', status, { stopTime: adSetInfo?.endTime }, currency, adImageMap, undefined, item.objective || campInfo?.objective, adSetInfo?.optimization_goal);
+      return calculateMetrics(item, 'ad', status, { stopTime: adSetInfo?.endTime }, currency, adCreativeMap, undefined, item.objective || campInfo?.objective, adSetInfo?.optimization_goal);
   });
 
   const genderRows = (genderData || []).map((item: any) => {
