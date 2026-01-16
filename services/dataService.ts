@@ -1,6 +1,6 @@
 
 import Papa from 'papaparse';
-import * as XLSX from 'xlsx';
+import XLSX from 'xlsx';
 import { AdRow, Platform, Level, ExportOptions, ColumnDef } from '../types';
 
 // Helper: Sanitize currency strings "$1,234.56" -> 1234.56
@@ -303,18 +303,11 @@ export const parseCSV = (file: File): Promise<{ rows: AdRow[], currency: string 
           const linkCpc = linkClicks > 0 ? spend / linkClicks : 0;
           
           // Conversion Rate Basis Fix:
-          // Strictly define CVR as (Purchases + Leads) / Link Clicks.
-          // Do NOT include generic "Results" if the result type is traffic/view based, to avoid inflated CVR (e.g. 500%).
           const conversionMetricTypes = ['購買', 'Purchase', '潛在客戶', 'Lead', '訊息', 'Messaging', 'CompleteRegistration', '轉換'];
           const isConversionType = conversionMetricTypes.some(t => resultType.includes(t));
           
-          // If the "Result" is a conversion type, use it. Otherwise, fallback to hard purchase counts.
-          // This excludes Link Clicks, Video Views, Engagement from the numerator of CVR.
           const cvrNumerator = isConversionType ? conversions : (purchases + leads);
-          
-          // Use Link Clicks as denominator for web conversion rate, fallback to all clicks only if link clicks missing (Google style)
           const cvrDenominator = linkClicks > 0 ? linkClicks : clicks;
-          
           const conversionRate = cvrDenominator > 0 ? (cvrNumerator / cvrDenominator) * 100 : 0;
           
           // Smart CPA Logic:
@@ -380,7 +373,7 @@ interface OneClickExportOptions {
     rawRows?: AdRow[]; // Optional full dump
 }
 
-// Export Function
+// Export Function with Styling
 export const exportToExcel = (options: OneClickExportOptions) => {
   const wb = XLSX.utils.book_new();
 
@@ -398,12 +391,19 @@ export const exportToExcel = (options: OneClickExportOptions) => {
               let val = row[colId];
               
               // Formatting logic similar to UI
+              // IMPORTANT: Format percent and currency for Excel to look good
               if (colId === 'status' && !val) val = row.status;
               if (colId === 'budget' && row.budgetType) val = `${val} (${row.budgetType})`;
-              if (typeof val === 'number') {
-                   // Keep raw numbers for Excel to handle, but maybe round decimals
-                   // Excel prefers raw numbers.
+              
+              // Handle Special Logic Exclusions for Total Row (already marked as -1 in App.tsx)
+              if (row.isTotal && val === -1) {
+                  val = '-';
               }
+              // Format percentages for Excel (e.g. 0.05 -> 5%)
+              else if (def?.type === 'percent' && typeof val === 'number') {
+                  val = val / 100; // Excel stores 50% as 0.5
+              }
+              
               newRow[label] = val;
           });
           return newRow;
@@ -414,24 +414,87 @@ export const exportToExcel = (options: OneClickExportOptions) => {
   options.sheets.forEach(sheet => {
       const mapped = mapData(sheet.data, sheet.columns, sheet.columnDefs);
       const ws = XLSX.utils.json_to_sheet(mapped);
+
+      // --- APPLY STYLES ---
+      // Requires xlsx-js-style import
+      const range = XLSX.utils.decode_range(ws['!ref'] as string);
+      
+      // Auto Width Estimation
+      const colWidths: number[] = [];
+
+      for (let C = range.s.c; C <= range.e.c; ++C) {
+          colWidths[C] = 12; // Min width
+      }
+
+      for (let R = range.s.r; R <= range.e.r; ++R) {
+        for (let C = range.s.c; C <= range.e.c; ++C) {
+          const cell_address = XLSX.utils.encode_cell({ r: R, c: C });
+          if (!ws[cell_address]) continue;
+          
+          const cell = ws[cell_address];
+          
+          // Initialize Style
+          if (!cell.s) cell.s = {};
+
+          // GLOBAL: Font
+          cell.s.font = { name: 'Microsoft JhengHei', sz: 11 };
+          
+          // GLOBAL: Border (Thin Black)
+          cell.s.border = {
+            top: { style: 'thin', color: { rgb: "000000" } },
+            bottom: { style: 'thin', color: { rgb: "000000" } },
+            left: { style: 'thin', color: { rgb: "000000" } },
+            right: { style: 'thin', color: { rgb: "000000" } }
+          };
+
+          // Alignment Logic
+          // Find type from column def to set alignment
+          const colId = sheet.columns[C];
+          const def = sheet.columnDefs.find(def => (def.label === colId || def.id === colId));
+          const isNum = def?.type === 'number' || def?.type === 'currency' || def?.type === 'percent';
+          
+          cell.s.alignment = {
+              vertical: "center",
+              horizontal: isNum ? "right" : "left",
+              wrapText: true 
+          };
+
+          // Number Formats
+          if (R > 0) { // Data Rows
+              if (def?.type === 'percent') cell.z = '0.00%';
+              if (def?.type === 'currency') cell.z = '"$"#,##0.00';
+              if (def?.type === 'number') cell.z = '#,##0';
+          }
+
+          // --- HEADER ROW (Row 0) ---
+          if (R === 0) {
+            // Light Green Background (#C6E0B4)
+            cell.s.fill = { fgColor: { rgb: "C6E0B4" } }; 
+            cell.s.font.bold = true;
+            cell.s.font.color = { rgb: "000000" };
+            cell.s.alignment.horizontal = "left"; // Headers usually centered or left? Image shows leftish/center. Let's do Left for text, right for nums match.
+            // Actually image shows headers left aligned except numbers? Let's stick to auto alignment.
+          }
+          
+          // --- TOTAL ROW (Row 1) ---
+          // We assume the App.tsx prepends the total row at index 0 of data, which is Row 1 in Excel (Row 0 is header)
+          else if (R === 1) {
+             // Dark Green Background (#548235)
+             cell.s.fill = { fgColor: { rgb: "548235" } };
+             cell.s.font.bold = true;
+             cell.s.font.color = { rgb: "FFFFFF" }; // White text
+          }
+          
+          // Estimate Width
+          const valLen = (cell.v ? String(cell.v).length : 0);
+          if (valLen > colWidths[C]) colWidths[C] = Math.min(valLen + 5, 50); // Cap width
+        }
+      }
+
+      ws['!cols'] = colWidths.map(w => ({ wch: w }));
+
       XLSX.utils.book_append_sheet(wb, ws, sheet.name);
   });
-  
-  // 2. Generate Raw Data Sheets (Optional, but good for backup)
-  if (options.rawRows && options.rawRows.length > 0) {
-      const appendRaw = (lvl: Level, name: string) => {
-          const data = options.rawRows?.filter(r => r.level === lvl) || [];
-          if (data.length) {
-               // Dump everything for raw, or minimal set? Let's dump key metrics.
-               // We'll just use the raw JSON to sheet for maximum data preservation
-               const ws = XLSX.utils.json_to_sheet(data);
-               XLSX.utils.book_append_sheet(wb, ws, `Raw_${name}`);
-          }
-      };
-      appendRaw('campaign', 'Campaigns');
-      appendRaw('adset', 'AdSets');
-      appendRaw('ad', 'Ads');
-  }
   
   XLSX.writeFile(wb, `${options.filename}_${new Date().toISOString().split('T')[0]}.xlsx`);
 };
