@@ -466,11 +466,12 @@ const App: React.FC = () => {
           roas: sums.spend ? sums.conversionValue / sums.spend : 0,
           costPerNewMessagingConnection: sums.newMessagingConnections ? sums.spend / sums.newMessagingConnections : 0,
           
-          // Metrics to mark as invalid for Total if mixed or specific requirements
-          conversions: isMixedResults ? -1 : sums.conversions,
-          costPerResult: -1, 
-          cpa: -1, 
-          conversionRate: -1, 
+          // Result Rate Calculation (Conversions / Impressions) * 100
+          conversions: sums.conversions, // Keep total count
+          costPerResult: sums.conversions ? sums.spend / sums.conversions : 0,
+          cpa: sums.conversions ? sums.spend / sums.conversions : 0, 
+          // Definition: "Result Rate"
+          conversionRate: sums.impressions ? (sums.conversions / sums.impressions) * 100 : 0,
           costPerPageEngagement: -1,
       };
   };
@@ -503,7 +504,7 @@ const App: React.FC = () => {
         linkCtr: r.impressions ? (r.linkClicks / r.impressions) * 100 : 0,
         linkCpc: r.linkClicks ? r.spend / r.linkClicks : 0,
         cpa: (r.conversions || r.websitePurchases) ? r.spend / (r.conversions || r.websitePurchases) : 0,
-        conversionRate: r.linkClicks ? ((r.conversions || r.websitePurchases) / r.linkClicks) * 100 : 0,
+        conversionRate: r.impressions ? ((r.conversions || r.websitePurchases) / r.impressions) * 100 : 0,
     });
 
     let result = Object.values(groups).map(calcRates);
@@ -516,6 +517,16 @@ const App: React.FC = () => {
     
     addToast("正在準備 Excel 報表...", 'info');
     
+    // Calculate Days duration
+    const startDate = new Date(dateRange.start);
+    const endDate = new Date(dateRange.end);
+    const diffTime = Math.abs(endDate.getTime() - startDate.getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+    const periodStr = `${dateRange.start.replace(/-/g, '/')} - ${dateRange.end.slice(5).replace(/-/g, '/')}(共${diffDays}天)`;
+    
+    const clientName = activeProject.name.replace('Meta: ', '').replace('Google: ', '');
+    const platform = activeProject.metaConfig ? 'Facebook' : 'Google';
+
     const sheets = selectedExportTypes.map(typeId => {
         const typeConfig = EXPORT_TYPES.find(t => t.id === typeId);
         if (!typeConfig) return null;
@@ -572,7 +583,12 @@ const App: React.FC = () => {
 
     exportToExcel({
         filename: `${activeProject.name}_廣告報表`,
-        sheets: sheets
+        sheets: sheets,
+        metadata: {
+            clientName,
+            period: periodStr,
+            platform
+        }
     });
 
     addToast("下載已開始", 'success');

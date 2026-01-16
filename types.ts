@@ -61,6 +61,7 @@ export interface AdRow {
   // Debug Data
   objective?: string;
   rawActions?: any[];
+  isTotal?: boolean; // Marker for total row
 
   // Flexible bucket for extra columns
   [key: string]: any;
@@ -101,6 +102,12 @@ export interface Preset {
   id: string;
   name: string;
   columns: string[];
+}
+
+export interface ExportMetadata {
+    clientName: string;
+    period: string;
+    platform: string;
 }
 
 export interface ExportOptions {

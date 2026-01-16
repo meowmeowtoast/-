@@ -1,7 +1,7 @@
 
 import Papa from 'papaparse';
 import XLSX from 'xlsx';
-import { AdRow, Platform, Level, ExportOptions, ColumnDef } from '../types';
+import { AdRow, Platform, Level, ExportOptions, ColumnDef, ExportMetadata } from '../types';
 
 // Helper: Sanitize currency strings "$1,234.56" -> 1234.56
 const parseCurrency = (val: any): number => {
@@ -302,13 +302,8 @@ export const parseCSV = (file: File): Promise<{ rows: AdRow[], currency: string 
           const linkCtr = impressions > 0 ? (linkClicks / impressions) * 100 : 0;
           const linkCpc = linkClicks > 0 ? spend / linkClicks : 0;
           
-          // Conversion Rate Basis Fix:
-          const conversionMetricTypes = ['購買', 'Purchase', '潛在客戶', 'Lead', '訊息', 'Messaging', 'CompleteRegistration', '轉換'];
-          const isConversionType = conversionMetricTypes.some(t => resultType.includes(t));
-          
-          const cvrNumerator = isConversionType ? conversions : (purchases + leads);
-          const cvrDenominator = linkClicks > 0 ? linkClicks : clicks;
-          const conversionRate = cvrDenominator > 0 ? (cvrNumerator / cvrDenominator) * 100 : 0;
+          // Result Rate (Conversions / Impressions)
+          const conversionRate = impressions > 0 ? (conversions / impressions) * 100 : 0;
           
           // Smart CPA Logic:
           let cpa = 0;
@@ -370,7 +365,7 @@ interface OneClickExportOptions {
         columns: string[];
         columnDefs: ColumnDef[];
     }[];
-    rawRows?: AdRow[]; // Optional full dump
+    metadata?: ExportMetadata;
 }
 
 // Export Function with Styling
@@ -391,7 +386,6 @@ export const exportToExcel = (options: OneClickExportOptions) => {
               let val = row[colId];
               
               // Formatting logic similar to UI
-              // IMPORTANT: Format percent and currency for Excel to look good
               if (colId === 'status' && !val) val = row.status;
               if (colId === 'budget' && row.budgetType) val = `${val} (${row.budgetType})`;
               
@@ -401,7 +395,13 @@ export const exportToExcel = (options: OneClickExportOptions) => {
               }
               // Format percentages for Excel (e.g. 0.05 -> 5%)
               else if (def?.type === 'percent' && typeof val === 'number') {
-                  val = val / 100; // Excel stores 50% as 0.5
+                  val = val / 100;
+              }
+
+              // **CRITICAL FIX**: For Total Row, ensure NO undefined values. 
+              // If val is missing, set to empty string. This ensures Excel creates the cell so we can color it.
+              if (row.isTotal && (val === undefined || val === null)) {
+                  val = '';
               }
               
               newRow[label] = val;
@@ -413,7 +413,23 @@ export const exportToExcel = (options: OneClickExportOptions) => {
   // 1. Generate Main Sheets
   options.sheets.forEach(sheet => {
       const mapped = mapData(sheet.data, sheet.columns, sheet.columnDefs);
-      const ws = XLSX.utils.json_to_sheet(mapped);
+      
+      // IMPORTANT: Origin at B6 (Row 5, Col 1) to leave room for headers and left spacer
+      // Use cast to any because origin is not in JSON2SheetOpts type definition but works at runtime
+      const ws = XLSX.utils.json_to_sheet(mapped, { origin: { r: 5, c: 1 } } as any);
+
+      // Add Metadata manually at B2:C4
+      if (options.metadata) {
+          XLSX.utils.sheet_add_aoa(ws, [
+              ["客戶", options.metadata.clientName],
+              ["月報期間", options.metadata.period],
+              ["推廣平台", options.metadata.platform]
+          ], { origin: { r: 1, c: 1 } });
+      }
+
+      // Hide Gridlines for cleaner look (Visual setting)
+      if (!ws['!views']) ws['!views'] = [];
+      ws['!views'][0] = { showGridLines: false };
 
       // --- APPLY STYLES ---
       // Requires xlsx-js-style import
@@ -421,14 +437,40 @@ export const exportToExcel = (options: OneClickExportOptions) => {
       
       // Auto Width Estimation
       const colWidths: number[] = [];
+      // Set Col A width small
+      colWidths[0] = 2; 
 
       for (let C = range.s.c; C <= range.e.c; ++C) {
+          // Skip Col A for auto width calculation of data, but initialize default
+          if (C === 0) continue;
           colWidths[C] = 12; // Min width
       }
 
+      // Metadata Region (Rows 1-3 in 0-index, which is Excel Rows 2-4)
+      // Table Header Row (Row 5 in 0-index, Excel Row 6)
+      // Total Row (Row 6 in 0-index, Excel Row 7)
+      
+      const META_START_ROW = 1;
+      const META_END_ROW = 3;
+      const TABLE_HEADER_ROW = 5;
+      const TABLE_TOTAL_ROW = 6;
+
       for (let R = range.s.r; R <= range.e.r; ++R) {
+        // Loop columns
         for (let C = range.s.c; C <= range.e.c; ++C) {
+            
+          // Skip Column A (Spacer)
+          if (C === 0) continue;
+
           const cell_address = XLSX.utils.encode_cell({ r: R, c: C });
+          
+          // SPECIAL LOGIC: Ensure Total Row (Row 7) cells exist even if empty, so we can color them.
+          if (R === TABLE_TOTAL_ROW) {
+              if (!ws[cell_address]) {
+                  ws[cell_address] = { t: 's', v: '', s: {} };
+              }
+          }
+
           if (!ws[cell_address]) continue;
           
           const cell = ws[cell_address];
@@ -439,55 +481,74 @@ export const exportToExcel = (options: OneClickExportOptions) => {
           // GLOBAL: Font
           cell.s.font = { name: 'Microsoft JhengHei', sz: 11 };
           
-          // GLOBAL: Border (Thin Black)
-          cell.s.border = {
-            top: { style: 'thin', color: { rgb: "000000" } },
-            bottom: { style: 'thin', color: { rgb: "000000" } },
-            left: { style: 'thin', color: { rgb: "000000" } },
-            right: { style: 'thin', color: { rgb: "000000" } }
-          };
-
-          // Alignment Logic
-          // Find type from column def to set alignment
-          const colId = sheet.columns[C];
-          const def = sheet.columnDefs.find(def => (def.label === colId || def.id === colId));
-          const isNum = def?.type === 'number' || def?.type === 'currency' || def?.type === 'percent';
-          
-          cell.s.alignment = {
-              vertical: "center",
-              horizontal: isNum ? "right" : "left",
-              wrapText: true 
-          };
-
-          // Number Formats
-          if (R > 0) { // Data Rows
-              if (def?.type === 'percent') cell.z = '0.00%';
-              if (def?.type === 'currency') cell.z = '"$"#,##0.00';
-              if (def?.type === 'number') cell.z = '#,##0';
+          // --- METADATA SECTION (Rows 2-4) ---
+          if (R >= META_START_ROW && R <= META_END_ROW) {
+              if (C === 1) { // Label Column (B)
+                  cell.s.alignment = { horizontal: "right", vertical: "center" };
+                  cell.s.font.bold = false; // Regular
+                  // Right border only for separator
+                  cell.s.border = { right: { style: 'thin', color: { rgb: "000000" } } };
+              } else if (C === 2) { // Value Column (C)
+                  cell.s.alignment = { horizontal: "left", vertical: "center" };
+                  // No borders for value
+              }
           }
 
-          // --- HEADER ROW (Row 0) ---
-          if (R === 0) {
-            // Light Green Background (#C6E0B4)
-            cell.s.fill = { fgColor: { rgb: "C6E0B4" } }; 
-            cell.s.font.bold = true;
-            cell.s.font.color = { rgb: "000000" };
-            cell.s.alignment.horizontal = "left"; // Headers usually centered or left? Image shows leftish/center. Let's do Left for text, right for nums match.
-            // Actually image shows headers left aligned except numbers? Let's stick to auto alignment.
+          // --- TABLE SECTION (Row 6+) ---
+          else if (R >= TABLE_HEADER_ROW) {
+              
+              // Common Table Border
+              cell.s.border = {
+                top: { style: 'thin', color: { rgb: "000000" } },
+                bottom: { style: 'thin', color: { rgb: "000000" } },
+                left: { style: 'thin', color: { rgb: "000000" } },
+                right: { style: 'thin', color: { rgb: "000000" } }
+              };
+
+              // Determine Column Type for Alignment
+              const colId = sheet.columns[C - 1]; // -1 because offset by Col A
+              const def = sheet.columnDefs.find(def => (def.label === colId || def.id === colId));
+              const isNum = def?.type === 'number' || def?.type === 'currency' || def?.type === 'percent';
+              
+              cell.s.alignment = {
+                  vertical: "center",
+                  horizontal: isNum ? "right" : "left",
+                  wrapText: true 
+              };
+
+              // Number Formats
+              if (R > TABLE_HEADER_ROW) { // Data Rows
+                  if (def?.type === 'percent') cell.z = '0.00%';
+                  if (def?.type === 'currency') cell.z = '"$"#,##0';
+                  if (def?.type === 'number') cell.z = '#,##0';
+              }
+
+              // --- HEADER ROW (Row 6) ---
+              if (R === TABLE_HEADER_ROW) {
+                // Light Green (#A9D08E)
+                cell.s.fill = { fgColor: { rgb: "A9D08E" } }; 
+                cell.s.font.bold = true;
+                cell.s.font.color = { rgb: "000000" };
+                cell.s.alignment.horizontal = "left"; 
+              }
+              
+              // --- TOTAL ROW (Row 7) ---
+              else if (R === TABLE_TOTAL_ROW) {
+                 // Dark Green (#548235)
+                 cell.s.fill = { fgColor: { rgb: "548235" } };
+                 cell.s.font.bold = true;
+                 cell.s.font.color = { rgb: "FFFFFF" }; // White text
+              }
           }
-          
-          // --- TOTAL ROW (Row 1) ---
-          // We assume the App.tsx prepends the total row at index 0 of data, which is Row 1 in Excel (Row 0 is header)
-          else if (R === 1) {
-             // Dark Green Background (#548235)
-             cell.s.fill = { fgColor: { rgb: "548235" } };
-             cell.s.font.bold = true;
-             cell.s.font.color = { rgb: "FFFFFF" }; // White text
-          }
-          
+
           // Estimate Width
           const valLen = (cell.v ? String(cell.v).length : 0);
-          if (valLen > colWidths[C]) colWidths[C] = Math.min(valLen + 5, 50); // Cap width
+          // Metadata columns might need more width
+          if (R <= META_END_ROW && C === 2) {
+               if (valLen > colWidths[C]) colWidths[C] = Math.min(valLen + 20, 60);
+          } else {
+               if (valLen > colWidths[C]) colWidths[C] = Math.min(valLen + 5, 50); 
+          }
         }
       }
 
