@@ -264,7 +264,7 @@ export const parseCSV = (file: File): Promise<{ rows: AdRow[], currency: string 
 
           // Messaging
           let newMessagingConnections = parseCurrency(
-              findValByKeyword(row, ['新的訊息聯繫對象', 'Messaging Connections', 'New Messaging Connections'])
+              findValByKeyword(row, ['新的訊息聯繫對象', 'Messaging Connections', 'New Messaging Connections', 'Messaging connections', 'messaging_connection'])
           );
           
           let messagingConversationsStarted = messagingStarted; // Already parsed
@@ -274,7 +274,7 @@ export const parseCSV = (file: File): Promise<{ rows: AdRow[], currency: string 
           if (newMessagingConnections > 0) {
               costPerNewMessagingConnection = spend / newMessagingConnections;
           } else {
-              const rawCost = findValByKeyword(row, ['每位新訊息聯繫對象成本', 'Cost per New Messaging Connection']);
+              const rawCost = findValByKeyword(row, ['每位新訊息聯繫對象成本', 'Cost per New Messaging Connection', 'Cost per Messaging Connection']);
               costPerNewMessagingConnection = parseCurrency(rawCost);
           }
 
@@ -302,11 +302,29 @@ export const parseCSV = (file: File): Promise<{ rows: AdRow[], currency: string 
           const linkCtr = impressions > 0 ? (linkClicks / impressions) * 100 : 0;
           const linkCpc = linkClicks > 0 ? spend / linkClicks : 0;
           
-          // Conversion Rate Basis
-          // If result is generic "Result", we use that. If 0, we fallback to purchases.
-          const conversionBasis = conversions > 0 ? conversions : purchases;
-          const cpa = conversionBasis > 0 ? spend / conversionBasis : 0;
-          const conversionRate = clicks > 0 ? (conversionBasis / clicks) * 100 : 0;
+          // Conversion Rate Basis Fix:
+          // Strictly define CVR as (Purchases + Leads) / Link Clicks.
+          // Do NOT include generic "Results" if the result type is traffic/view based, to avoid inflated CVR (e.g. 500%).
+          const conversionMetricTypes = ['購買', 'Purchase', '潛在客戶', 'Lead', '訊息', 'Messaging', 'CompleteRegistration', '轉換'];
+          const isConversionType = conversionMetricTypes.some(t => resultType.includes(t));
+          
+          // If the "Result" is a conversion type, use it. Otherwise, fallback to hard purchase counts.
+          // This excludes Link Clicks, Video Views, Engagement from the numerator of CVR.
+          const cvrNumerator = isConversionType ? conversions : (purchases + leads);
+          
+          // Use Link Clicks as denominator for web conversion rate, fallback to all clicks only if link clicks missing (Google style)
+          const cvrDenominator = linkClicks > 0 ? linkClicks : clicks;
+          
+          const conversionRate = cvrDenominator > 0 ? (cvrNumerator / cvrDenominator) * 100 : 0;
+          
+          // Smart CPA Logic:
+          let cpa = 0;
+          if (purchases > 0) {
+              cpa = spend / purchases;
+          } else if (conversions > 0) {
+              cpa = costPerResult > 0 ? costPerResult : (spend / conversions);
+          }
+
           const roas = spend > 0 ? conversionValue / spend : 0;
 
           return {

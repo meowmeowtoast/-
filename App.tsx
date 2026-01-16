@@ -77,7 +77,7 @@ const DEFAULT_PRESETS: Preset[] = [
         'name', 
         'status', 'reach', 'clicks', 'impressions', 'ctr', 'cpc', 
         'linkClicks', 'linkCtr', 'linkCpc', 
-        'conversions', 'cpa', 'conversionRate', 'spend'
+        'conversions', 'costPerResult', 'cpa', 'conversionRate', 'spend' 
     ] 
   },
   // 2. Audience (AdSet) Level Report
@@ -151,6 +151,15 @@ const OVERRIDE_OPTIONS = [
     { value: 'video_thruplay_watched_actions', label: 'ThruPlay (Video)' },
     { value: 'onsite_conversion.messaging_conversation_started_7d', label: '開始訊息對話 (Messages)' },
     { value: 'post_engagement', label: '貼文互動 (Engagement)' },
+];
+
+const EXPORT_TYPES = [
+    { id: 'campaign', label: '廣告活動', presetId: 'campaign_report', level: 'campaign' },
+    { id: 'adset', label: '廣告受眾', presetId: 'audience_report', level: 'adset' },
+    { id: 'creative', label: '素材表現', presetId: 'creative_report', level: 'ad' },
+    { id: 'age', label: '年齡', presetId: 'age_report', level: 'age' },
+    { id: 'gender', label: '性別', presetId: 'gender_report', level: 'gender' },
+    { id: 'yangyu', label: '秧語預設', presetId: 'yangyu_default', level: 'yangyu' },
 ];
 
 const getLast30Days = () => {
@@ -253,6 +262,10 @@ const App: React.FC = () => {
   const [isTokenManagerOpen, setIsTokenManagerOpen] = useState(false);
   const [showExportHelp, setShowExportHelp] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState<string | null>(null);
+  
+  // Export Modal State
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
+  const [selectedExportTypes, setSelectedExportTypes] = useState<string[]>(EXPORT_TYPES.map(t => t.id));
 
   // Debug Modal & Override
   const [selectedDebugRow, setSelectedDebugRow] = useState<AdRow | null>(null);
@@ -260,7 +273,7 @@ const App: React.FC = () => {
   
   // Meta API State
   const [metaToken, setMetaToken] = useState("");
-  const [selectedTokenId, setSelectedTokenId] = useState("");
+  const [selectedTokenId, setSelectedTokenId] = useState("dev-auto-token"); // Set Default Token Here
   const [metaAccounts, setMetaAccounts] = useState<any[]>([]);
   const [selectedMetaAccount, setSelectedMetaAccount] = useState("");
   
@@ -440,13 +453,9 @@ const App: React.FC = () => {
       addToast("成果類型已更新", "success");
   };
 
-
-  // Aggregated Demographics Data
-  const demographicData = useMemo(() => {
-    if (!activeProject) return null;
-    if (activeTab !== 'age' && activeTab !== 'gender') return null;
-
-    const relevantRows = activeProject.data.filter(r => r.level === activeTab);
+  // Helper to Aggregate Data (Reusable for Export)
+  const getAggregatedData = (rows: AdRow[], level: 'age' | 'gender') => {
+    const relevantRows = rows.filter(r => r.level === level);
     const groups: Record<string, any> = {};
 
     relevantRows.forEach(row => {
@@ -466,7 +475,6 @@ const App: React.FC = () => {
         groups[key].conversionValue += row.conversionValue;
     });
 
-    // Helper for rates
     const calcRates = (r: any) => ({
         ...r,
         ctr: r.impressions ? (r.clicks / r.impressions) * 100 : 0,
@@ -474,12 +482,22 @@ const App: React.FC = () => {
         linkCtr: r.impressions ? (r.linkClicks / r.impressions) * 100 : 0,
         linkCpc: r.linkClicks ? r.spend / r.linkClicks : 0,
         cpa: (r.conversions || r.websitePurchases) ? r.spend / (r.conversions || r.websitePurchases) : 0,
-        conversionRate: r.clicks ? ((r.conversions || r.websitePurchases) / r.clicks) * 100 : 0,
+        conversionRate: r.linkClicks ? ((r.conversions || r.websitePurchases) / r.linkClicks) * 100 : 0, // Updated CVR
     });
 
     let result = Object.values(groups).map(calcRates);
     result.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+    return result;
+  };
 
+  // Aggregated Demographics Data (For UI)
+  const demographicData = useMemo(() => {
+    if (!activeProject) return null;
+    if (activeTab !== 'age' && activeTab !== 'gender') return null;
+
+    const result = getAggregatedData(activeProject.data, activeTab);
+
+    // Calculate Total Row
     const total = result.reduce((acc, curr) => ({
         impressions: acc.impressions + curr.impressions,
         clicks: acc.clicks + curr.clicks,
@@ -488,6 +506,16 @@ const App: React.FC = () => {
         websitePurchases: acc.websitePurchases + curr.websitePurchases,
         conversions: acc.conversions + curr.conversions,
     }), { impressions: 0, clicks: 0, spend: 0, linkClicks: 0, websitePurchases: 0, conversions: 0 });
+
+    const calcRates = (r: any) => ({
+        ...r,
+        ctr: r.impressions ? (r.clicks / r.impressions) * 100 : 0,
+        cpc: r.clicks ? r.spend / r.clicks : 0,
+        linkCtr: r.impressions ? (r.linkClicks / r.impressions) * 100 : 0,
+        linkCpc: r.linkClicks ? r.spend / r.linkClicks : 0,
+        cpa: (r.conversions || r.websitePurchases) ? r.spend / (r.conversions || r.websitePurchases) : 0,
+        conversionRate: r.linkClicks ? ((r.conversions || r.websitePurchases) / r.linkClicks) * 100 : 0, // Updated CVR
+    });
 
     const totalRow = {
         id: 'total',
@@ -565,6 +593,48 @@ const App: React.FC = () => {
 
     return data;
   }, [activeProject, activeTab, searchQuery, sortConfig, statusFilter]);
+
+  // NEW: Calculate Totals based on filtered data
+  const tableTotals = useMemo(() => {
+    if (filteredData.length === 0) return null;
+    
+    const sums = filteredData.reduce((acc, row) => ({
+        impressions: acc.impressions + row.impressions,
+        clicks: acc.clicks + row.clicks,
+        spend: acc.spend + row.spend,
+        reach: acc.reach + row.reach,
+        linkClicks: acc.linkClicks + row.linkClicks,
+        websitePurchases: acc.websitePurchases + row.websitePurchases,
+        videoViews: acc.videoViews + row.videoViews,
+        landingPageViews: acc.landingPageViews + row.landingPageViews,
+        conversionValue: acc.conversionValue + row.conversionValue,
+        newMessagingConnections: acc.newMessagingConnections + row.newMessagingConnections,
+        messagingConversationsStarted: acc.messagingConversationsStarted + row.messagingConversationsStarted,
+    }), {
+        impressions: 0, clicks: 0, spend: 0, reach: 0, linkClicks: 0, 
+        websitePurchases: 0, videoViews: 0, landingPageViews: 0, 
+        conversionValue: 0, newMessagingConnections: 0, messagingConversationsStarted: 0
+    });
+
+    return {
+        id: 'totals',
+        ...sums,
+        ctr: sums.impressions ? (sums.clicks / sums.impressions) * 100 : 0,
+        cpc: sums.clicks ? sums.spend / sums.clicks : 0,
+        linkCtr: sums.impressions ? (sums.linkClicks / sums.impressions) * 100 : 0,
+        linkCpc: sums.linkClicks ? sums.spend / sums.linkClicks : 0,
+        cpm: sums.impressions ? (sums.spend / sums.impressions) * 1000 : 0,
+        frequency: sums.reach ? sums.impressions / sums.reach : 0,
+        roas: sums.spend ? sums.conversionValue / sums.spend : 0,
+        costPerNewMessagingConnection: sums.newMessagingConnections ? sums.spend / sums.newMessagingConnections : 0,
+        // Metrics to exclude (show '-') as per user request
+        conversions: -1, 
+        costPerResult: -1,
+        cpa: -1,
+        conversionRate: -1,
+        costPerPageEngagement: -1,
+    };
+  }, [filteredData]);
 
   // Ensure sticky columns are always on the left in the visibleColumns array
   const sortedVisibleColumns = useMemo(() => {
@@ -795,43 +865,65 @@ const App: React.FC = () => {
 
   const handleExportClick = () => {
     if (!activeProject) return;
+    setIsExportDialogOpen(true);
+  };
+
+  const executeExport = () => {
+    if (!activeProject || selectedExportTypes.length === 0) return;
     
     addToast("正在準備 Excel 報表...", 'info');
+    
+    const sheets = selectedExportTypes.map(typeId => {
+        const typeConfig = EXPORT_TYPES.find(t => t.id === typeId);
+        if (!typeConfig) return null;
 
-    // 1. 決定要匯出的主要數據
-    let dataToExport: any[] = filteredData;
-    let columnsToExport = visibleColumns;
-    let sheetName = getTabLabel(activeTab);
-    let columnDefs = AVAILABLE_COLUMNS;
+        // 1. Data Selection
+        let dataToExport: any[] = [];
+        
+        if (typeId === 'age' || typeId === 'gender') {
+            // Use aggregation logic
+            dataToExport = getAggregatedData(activeProject.data, typeId as any);
+        } else if (typeId === 'yangyu') {
+            // Yangyu Default: usually campaign level
+            dataToExport = activeProject.data.filter(r => r.level === 'campaign');
+        } else if (typeId === 'creative') {
+             dataToExport = activeProject.data.filter(r => r.level === 'ad' || r.level === 'creative');
+        } else {
+             dataToExport = activeProject.data.filter(r => r.level === typeConfig.level);
+        }
 
-    // 2. 特殊處理：人口統計數據 (Aggregate Data)
-    if (activeTab === 'age' || activeTab === 'gender') {
-        if (demographicData) {
-            // 需要包含第一欄 (年齡/性別)，這裡用 'name' 作為 Key
-            dataToExport = demographicData.rows;
+        // 2. Column Selection
+        let columnsToExport: string[] = [];
+        let columnDefs = AVAILABLE_COLUMNS; // Default
+
+        if (typeId === 'age' || typeId === 'gender') {
             columnsToExport = ['name', ...DEMO_TABLE_COLS.map(c => c.id)];
             columnDefs = [
-                { id: 'name', label: activeTab === 'age' ? '年齡' : '性別', type: 'text' },
+                { id: 'name', label: typeId === 'age' ? '年齡' : '性別', type: 'text' },
                 ...DEMO_TABLE_COLS
             ] as ColumnDef[];
+        } else {
+            // Find preset
+            const preset = DEFAULT_PRESETS.find(p => p.id === typeConfig.presetId);
+            columnsToExport = preset ? preset.columns : AVAILABLE_COLUMNS.map(c => c.id);
         }
-    }
+
+        return {
+            name: typeConfig.label,
+            data: dataToExport,
+            columns: columnsToExport,
+            columnDefs: columnDefs
+        };
+    }).filter(s => s !== null) as any[];
 
     // 3. 執行匯出
     exportToExcel({
-        filename: `${activeProject.name}_${sheetName}`,
-        sheets: [
-            {
-                name: sheetName,
-                data: dataToExport,
-                columns: columnsToExport,
-                columnDefs: columnDefs
-            }
-        ],
-        rawRows: activeProject.data // 附帶完整原始數據
+        filename: `${activeProject.name}_廣告報表`,
+        sheets: sheets
     });
 
     addToast("下載已開始", 'success');
+    setIsExportDialogOpen(false);
   };
 
   const handleAnalysis = async () => {
@@ -957,6 +1049,33 @@ const App: React.FC = () => {
          <div className="flex items-center justify-center bg-zinc-950/50 rounded-lg p-2 overflow-hidden">
              {previewImage && <img src={previewImage} alt="Preview" className="max-w-full max-h-[80vh] object-contain rounded-md" />}
          </div>
+      </Dialog>
+      
+      {/* Export Dialog */}
+      <Dialog isOpen={isExportDialogOpen} onClose={() => setIsExportDialogOpen(false)} title="下載報表設定">
+          <div className="space-y-4">
+              <p className="text-sm text-zinc-400">請選擇您想要匯出的報表類型（可多選）：</p>
+              <div className="grid grid-cols-2 gap-3">
+                  {EXPORT_TYPES.map(type => (
+                      <label key={type.id} className="flex items-center gap-3 p-3 rounded-lg border border-zinc-800 bg-zinc-900/50 hover:bg-zinc-800 cursor-pointer transition-colors">
+                          <Checkbox 
+                            checked={selectedExportTypes.includes(type.id)}
+                            onChange={(e) => {
+                                if(e.target.checked) setSelectedExportTypes([...selectedExportTypes, type.id]);
+                                else setSelectedExportTypes(selectedExportTypes.filter(id => id !== type.id));
+                            }}
+                          />
+                          <span className="text-sm text-zinc-200">{type.label}</span>
+                      </label>
+                  ))}
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                  <Button variant="ghost" onClick={() => setIsExportDialogOpen(false)}>取消</Button>
+                  <Button onClick={executeExport} disabled={selectedExportTypes.length === 0} className="bg-[#1877F2] hover:bg-[#166fe5] text-white">
+                      確認下載
+                  </Button>
+              </div>
+          </div>
       </Dialog>
 
       {/* DEBUG DATA DIALOG */}
@@ -1203,7 +1322,7 @@ const App: React.FC = () => {
                       <Button onClick={handleAnalysis} variant="secondary" className="h-8 text-xs gap-2">
                         {isAnalyzing ? <RefreshCw className="animate-spin" size={14} /> : <Sparkles size={14} className="text-amber-400"/>} AI 分析
                       </Button>
-                      <Button onClick={handleExportClick} variant="primary" className="h-8 text-xs gap-2"><Download size={14} /> 一鍵下載報表</Button>
+                      <Button onClick={handleExportClick} variant="primary" className="h-8 text-xs gap-2"><Download size={14} /> 下載報表</Button>
                     </>
                   )}
                </div>
@@ -1342,7 +1461,7 @@ const App: React.FC = () => {
                                 <tr className="border-b border-zinc-800 bg-zinc-900/80">
                                     <th className="px-4 py-3 font-medium text-zinc-500 text-xs uppercase tracking-wider">{activeTab === 'age' ? '年齡' : '性別'}</th>
                                     {DEMO_TABLE_COLS.map(col => (
-                                        <th key={col.id} className="px-4 py-3 font-medium text-zinc-500 text-xs uppercase tracking-wider">{col.label}</th>
+                                        <th key={col.id} className="px-4 py-3 font-medium text-zinc-500 text-xs uppercase tracking-wider text-right">{col.label}</th>
                                     ))}
                                 </tr>
                             </thead>
@@ -1351,7 +1470,7 @@ const App: React.FC = () => {
                                 <tr className="bg-amber-900/30 text-amber-100 font-semibold border-b border-zinc-800">
                                     <td className="px-4 py-3">{demographicData.total.name}</td>
                                     {DEMO_TABLE_COLS.map(col => (
-                                        <td key={col.id} className="px-4 py-3 tabular-nums">
+                                        <td key={col.id} className="px-4 py-3 tabular-nums text-right">
                                             {formatVal(demographicData.total[col.id], col.type, activeProject.currency)}
                                         </td>
                                     ))}
@@ -1361,7 +1480,7 @@ const App: React.FC = () => {
                                     <tr key={row.name} className="hover:bg-zinc-800/30 transition-colors">
                                         <td className="px-4 py-2.5 font-medium text-zinc-300">{row.name}</td>
                                         {DEMO_TABLE_COLS.map(col => (
-                                            <td key={col.id} className={cn("px-4 py-2.5 text-zinc-400 tabular-nums", col.type === 'currency' && "text-zinc-300")}>
+                                            <td key={col.id} className={cn("px-4 py-2.5 text-zinc-400 tabular-nums text-right", col.type === 'currency' && "text-zinc-300")}>
                                                 {formatVal(row[col.id], col.type, activeProject.currency)}
                                             </td>
                                         ))}
@@ -1371,13 +1490,15 @@ const App: React.FC = () => {
                         </table>
                       ) : (
                         // --- STANDARD TABLE ---
-                        <table className="w-full text-left text-sm whitespace-nowrap border-collapse">
+                        <table className="w-full text-left text-sm whitespace-nowrap border-collapse relative">
                             <thead>
                             <tr className="border-b border-zinc-800 bg-zinc-900/80">
                                 {sortedVisibleColumns.map(colId => {
                                 const def = AVAILABLE_COLUMNS.find(c => c.id === colId);
                                 const isSorted = sortConfig?.key === colId;
                                 const stickyStyle = getStickyStyle(colId, true);
+                                // Determine alignment class
+                                const alignClass = (def?.type === 'number' || def?.type === 'currency' || def?.type === 'percent') ? 'text-right' : 'text-left';
                                 
                                 return (
                                     <th 
@@ -1386,10 +1507,11 @@ const App: React.FC = () => {
                                         style={stickyStyle}
                                         className={cn(
                                           "px-4 py-3 font-medium text-zinc-500 text-xs uppercase tracking-wider cursor-pointer hover:text-zinc-300 transition-colors select-none group",
+                                          alignClass,
                                           stickyStyle.position === 'sticky' ? "border-r-0" : ""
                                         )}
                                     >
-                                    <div className={cn("flex items-center gap-1", (colId === 'conversions' || colId === 'costPerResult') && "justify-end")}>
+                                    <div className={cn("flex items-center gap-1", alignClass === 'text-right' && "justify-end")}>
                                         {def?.label}
                                         <span className="text-zinc-600 group-hover:text-zinc-500">
                                             {isSorted ? (
@@ -1419,6 +1541,9 @@ const App: React.FC = () => {
                                         const stickyStyle = getStickyStyle(colId, false);
                                         const stickyClass = stickyStyle.position === 'sticky' ? "border-r-0 group-hover:bg-[#18181b]" : "";
                                         
+                                        // Standardize alignment based on type
+                                        const alignClass = (def?.type === 'number' || def?.type === 'currency' || def?.type === 'percent') ? 'text-right' : 'text-left';
+
                                         if (colId === 'campaignName') {
                                             return (
                                                 <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5 max-w-[200px] truncate text-zinc-300 font-medium", stickyClass)}>
@@ -1452,7 +1577,7 @@ const App: React.FC = () => {
                                         }
                                         
                                         if (colId === 'budget') {
-                                             return <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5 text-zinc-400 tabular-nums", stickyClass)}>
+                                             return <td key={colId} style={stickyStyle} className={cn("px-4 py-2.5 text-zinc-400 tabular-nums text-right", stickyClass)}>
                                                  {(val === 0 && row.budgetType === 'ABO') ? (
                                                      <span className="text-xs text-zinc-500">使用廣告組合預算</span>
                                                  ) : (
@@ -1503,7 +1628,7 @@ const App: React.FC = () => {
                                         }
 
                                         return (
-                                        <td key={colId} className={cn("px-4 py-2.5 text-zinc-400 tabular-nums", def?.type === 'currency' && "text-zinc-300", (colId === 'roas' && row.roas > 3) && "text-emerald-400 font-medium")}>
+                                        <td key={colId} className={cn("px-4 py-2.5 text-zinc-400 tabular-nums", alignClass, def?.type === 'currency' && "text-zinc-300", (colId === 'roas' && row.roas > 3) && "text-emerald-400 font-medium")}>
                                             {formatVal(val, def?.type || 'text', activeProject.currency)}
                                         </td>
                                         );
@@ -1512,6 +1637,57 @@ const App: React.FC = () => {
                                 );
                             })}
                             </tbody>
+                            
+                            {/* NEW: Total Footer Row */}
+                            {tableTotals && (
+                                <tfoot className="sticky bottom-0 z-40 bg-[#18181b] font-semibold text-zinc-200 border-t-2 border-zinc-700 shadow-[0_-5px_15px_-5px_rgba(0,0,0,0.5)]">
+                                    <tr>
+                                        {sortedVisibleColumns.map(colId => {
+                                            const def = AVAILABLE_COLUMNS.find(c => c.id === colId);
+                                            // Re-use sticky logic from header (background matches footer)
+                                            const stickyStyle = getStickyStyle(colId, true);
+                                            // Alignment logic for footer
+                                            const alignClass = (def?.type === 'number' || def?.type === 'currency' || def?.type === 'percent') ? 'text-right' : 'text-left';
+                                            
+                                            // Explicitly set background for footer sticky cells to cover content
+                                            const cellStyle = {
+                                                ...stickyStyle,
+                                                backgroundColor: '#18181b',
+                                                zIndex: stickyStyle.position === 'sticky' ? 40 : undefined 
+                                            };
+
+                                            let content: React.ReactNode = '-';
+                                            
+                                            // Label Logic: Put '總計' in the first likely text column
+                                            // Priority: campaignName -> name
+                                            if (colId === 'campaignName' || (colId === 'name' && !sortedVisibleColumns.includes('campaignName'))) {
+                                                content = '總計';
+                                            } 
+                                            // Exclude metadata columns
+                                            else if (['imageUrl', 'platform', 'status', 'budget', 'name'].includes(colId)) {
+                                                content = '';
+                                            } 
+                                            // Exclude mixed-type or invalid-to-sum metrics as requested
+                                            else if (['conversions', 'costPerResult', 'cpa', 'conversionRate', 'costPerPageEngagement'].includes(colId)) {
+                                                content = '-';
+                                            }
+                                            // Render Totals/Averages
+                                            else {
+                                                const val = tableTotals[colId as keyof typeof tableTotals];
+                                                if (typeof val === 'number') {
+                                                    content = formatVal(val, def?.type || 'number', activeProject.currency);
+                                                }
+                                            }
+
+                                            return (
+                                                <td key={colId} style={cellStyle} className={cn("px-4 py-3 tabular-nums text-zinc-100", alignClass, cellStyle.position === 'sticky' ? "border-r-0 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.5)]" : "")}>
+                                                    {content}
+                                                </td>
+                                            )
+                                        })}
+                                    </tr>
+                                </tfoot>
+                            )}
                         </table>
                       )}
                     </div>

@@ -79,6 +79,7 @@ const ACTION_WEIGHTS: Record<string, number> = {
     'onsite_conversion.messaging_conversation_started_7d': 4.0, // 訊息對話優先
     'onsite_conversion.messaging_first_reply': 4.0,
     'onsite_conversion.messaging_connection': 3.5, // 訊息聯繫次之
+    'messaging_connection': 3.5, 
     'video_thruplay_watched_actions': 2.0, // ThruPlay
     'video_view': 1.8, // 3-Sec View
     'omni_landing_page_view': 1.5,
@@ -96,10 +97,10 @@ const KEYWORD_MAPPING: Record<string, string[]> = {
     '觀影': ['video_thruplay_watched_actions', 'video_view', 'video_p75_watched_actions'],
     'thruplay': ['video_thruplay_watched_actions'],
     
-    'message': ['onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_first_reply', 'onsite_conversion.messaging_connection'],
-    'messaging': ['onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_first_reply', 'onsite_conversion.messaging_connection'],
-    '訊息': ['onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_first_reply', 'onsite_conversion.messaging_connection'],
-    '對話': ['onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_first_reply', 'onsite_conversion.messaging_connection'],
+    'message': ['onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_first_reply', 'onsite_conversion.messaging_connection', 'messaging_connection'],
+    'messaging': ['onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_first_reply', 'onsite_conversion.messaging_connection', 'messaging_connection'],
+    '訊息': ['onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_first_reply', 'onsite_conversion.messaging_connection', 'messaging_connection'],
+    '對話': ['onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_first_reply', 'onsite_conversion.messaging_connection', 'messaging_connection'],
     
     'traffic': ['omni_landing_page_view', 'landing_page_view', 'link_click'],
     '流量': ['omni_landing_page_view', 'landing_page_view', 'link_click'],
@@ -120,7 +121,7 @@ const GOAL_TO_ACTION_MAP: Record<string, string[]> = {
     'LANDING_PAGE_VIEWS': ['omni_landing_page_view', 'landing_page_view'],
     'LINK_CLICKS': ['link_click'],
     'POST_ENGAGEMENT': ['post_engagement'],
-    'MESSAGES': ['onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_connection'],
+    'MESSAGES': ['onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_connection', 'messaging_connection'],
     'LEAD_GENERATION': ['on_facebook_lead', 'lead'],
     'OFFSITE_CONVERSIONS': ['offsite_conversion.fb_pixel_purchase', 'purchase', 'omni_purchase', 'lead'],
     'CONVERSIONS': ['purchase', 'omni_purchase'],
@@ -169,7 +170,7 @@ const getPrimaryResult = (
         const val = parseFloat(act.value);
         const atype = act.action_type;
         // 高價值指標保留所有數值，其他指標需 > 3 避免噪音
-        if (['purchase', 'offsite_conversion.fb_pixel_purchase', 'omni_purchase', 'onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_connection'].includes(atype)) {
+        if (['purchase', 'offsite_conversion.fb_pixel_purchase', 'omni_purchase', 'onsite_conversion.messaging_conversation_started_7d', 'onsite_conversion.messaging_connection', 'messaging_connection'].includes(atype)) {
              if (val > 0) actionDict[atype] = val;
         } else if (val > 3) {
              actionDict[atype] = val;
@@ -313,6 +314,7 @@ const calculateCPA = (item: any, actionType: string, resultValue: number): numbe
     }
 
     // 2. 手動計算 Fallback (花費 / 數量)
+    // 注意：這會使用總花費除以該動作數量，若該動作非唯一主要目標，數字可能偏高。
     const spend = parseFloat(item.spend || 0);
     return spend / resultValue;
 };
@@ -396,11 +398,31 @@ const calculateMetrics = (item: any, level: AdRow['level'], effectiveStatus: str
     const linkCtr = impressions > 0 ? (linkClicks / impressions) * 100 : 0;
     const linkCpc = linkClicks > 0 ? spend / linkClicks : 0;
     
-    // Specific CPA for Purchase
-    const cpa = websitePurchases > 0 ? calculateCPA(item, 'purchase', websitePurchases) : 0;
+    // Smart CPA Logic:
+    let cpa = 0;
+    if (websitePurchases > 0) {
+        cpa = calculateCPA(item, 'purchase', websitePurchases);
+    } else if (conversions > 0) {
+        cpa = costPerResult; // Fallback to Cost per Result
+    }
     
-    // CVR (Clicks to Results)
-    const conversionRate = clicks > 0 ? (conversions / clicks) * 100 : 0;
+    // CVR (Conversion Rate) Logic Update:
+    // Problem: If "Results" = Video Views (1000) and Clicks = 50, CVR = 2000%.
+    // Fix: Only calculate CVR if the "Result" is actually a conversion event (Purchase, Lead, Message).
+    // Denominator should be Link Clicks, not all Clicks, to match standard web CVR definition.
+    
+    // 1. Identify if the 'Primary Result' is a conversion type
+    const conversionMetricTypes = ['purchase', 'lead', 'messaging', 'schedule', 'contact', 'complete_registration', 'submit_application'];
+    const isConversionType = conversionMetricTypes.some(k => resultActionType.toLowerCase().includes(k));
+
+    // 2. Numerator: Use conversions IF valid type, otherwise use hard count of purchases/leads only (ignore video views/traffic for CVR)
+    // Note: If resultType is "Link Clicks", this correctly prevents CVR from being 100% (LinkClicks / LinkClicks)
+    const cvrNumerator = isConversionType ? conversions : websitePurchases;
+
+    // 3. Denominator: Link Clicks
+    const cvrDenominator = linkClicks > 0 ? linkClicks : clicks;
+
+    const conversionRate = cvrDenominator > 0 ? (cvrNumerator / cvrDenominator) * 100 : 0;
     
     const roas = spend > 0 ? conversionValue / spend : 0;
 
@@ -422,11 +444,19 @@ const calculateMetrics = (item: any, level: AdRow['level'], effectiveStatus: str
     }
 
     // Messaging Metrics
+    // Explicitly check both keys to ensure data capture
     const messagingConversationsStarted = findVal('onsite_conversion.messaging_conversation_started_7d');
-    const newMessagingConnections = findVal('onsite_conversion.messaging_connection') || findVal('messaging_connection');
     
-    // Use calculateCPA for consistent costing (Uses API CPA if available, else spend/count)
-    const costPerNewMessagingConnection = calculateCPA(item, 'onsite_conversion.messaging_connection', newMessagingConnections);
+    // Check various keys for "Connections"
+    let msgConnKey = 'onsite_conversion.messaging_connection';
+    let newMessagingConnections = findVal(msgConnKey);
+    if (!newMessagingConnections) {
+        msgConnKey = 'messaging_connection';
+        newMessagingConnections = findVal(msgConnKey);
+    }
+    
+    // Calculate cost using the SAME key we found the value with
+    const costPerNewMessagingConnection = calculateCPA(item, msgConnKey, newMessagingConnections);
 
     const postEngagement = findVal('post_engagement');
     const costPerPageEngagement = calculateCPA(item, 'post_engagement', postEngagement);
